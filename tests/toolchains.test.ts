@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EXAMPLES, generate, langFromFileName, parse, type Lang, type Program } from '../src/core';
+import { EXAMPLES, TASKS, generate, langFromFileName, parse, walkAllExprs, type Lang, type Program } from '../src/core';
 import { runToText } from './helpers';
 
 const has = (cmd: string, args: string[] = ['--version']) => spawnSync(cmd, args, { stdio: 'ignore' }).status === 0;
@@ -150,6 +150,28 @@ describe('hand-written classes run in every language', () => {
     for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
       it.skipIf(!runner.available)(`${file} -> ${lang}`, () => {
         expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(HUNDE);
+      });
+    }
+  }
+});
+
+describe('exercise solutions run with the real toolchains', () => {
+  for (const task of TASKS) {
+    for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+      it.skipIf(!runner.available)(`${task.id} / ${lang}`, () => {
+        const code = generate(task.solution, lang).code;
+        for (const c of task.cases) {
+          const out = runner.run(code, (c.input ?? []).join('\n') + '\n');
+          // the prompts of "frage ..." are printed as well
+          let text = normalize(out);
+          walkAllExprs(task.solution.main ?? [], (e) => {
+            if (e.k === 'ask' && e.prompt?.k === 'str') text = text.split(e.prompt.v).join('');
+          });
+          const lines = text.split('\n');
+          const expected = c.output.split('\n');
+          if (c.anyOrder) expect([...lines].sort()).toEqual([...expected].sort());
+          else expect(lines).toEqual(expected);
+        }
       });
     }
   }

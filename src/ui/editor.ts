@@ -4,6 +4,7 @@ import * as Blockly from 'blockly/core';
 import { registerContinuousToolbox } from '@blockly/continuous-toolbox';
 import { type Layout, type WorkspaceState, fromBlockly, importBlocks, toBlockly } from '../core/blockly';
 import { EXAMPLES } from '../core/examples';
+import { TASKS, type Task, checkTask } from '../core/tasks';
 import { generate } from '../core/generators';
 import { LANGS, LANG_INFO, type Lang, type Program, type ProgramMeta, walkAllExprs, walkStmts } from '../core/ir';
 import { type Drawing, RunError, runProgram } from '../core/interpreter';
@@ -40,7 +41,32 @@ const ICONS = {
   apply: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h11m-4-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="17" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></svg>',
   undo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M4 12h10a6 6 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -4)"/></svg>',
   clear: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M10 7V5h4v2m-7 0 1 12h8l1-12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  fold: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  bulb: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6m-5 3h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
 };
+
+/** Small per-browser settings (fold state, solved exercises); storage may be unavailable. */
+const store = {
+  get<T>(key: string, fallback: T): T {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : (JSON.parse(v) as T);
+    } catch {
+      return fallback;
+    }
+  },
+  set(key: string, value: unknown) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* not available (e.g. private mode) */
+    }
+  },
+};
+
+const LEVELS: Record<number, string> = { 1: 'Einstieg', 2: 'Fortgeschritten', 3: 'Profi' };
 
 export const LOGO =
   '<svg class="vc-logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5a2 2 0 0 1 2-2h5l2 2h4l2-2h9a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H18l-2 2h-4l-2-2H5a2 2 0 0 1-2-2z" fill="#E8A800"/><path d="M7 14a2 2 0 0 1 2-2h1l2 2h4l2-2h9a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H18l-2 2h-4l-2-2H9a2 2 0 0 1-2-2z" fill="#F28C1A"/><path d="M7 23a2 2 0 0 1 2-2h1l2 2h4l2-2h5a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2z" fill="#2FAE63"/></svg>';
@@ -102,6 +128,9 @@ export class BlockEditor {
         <label class="vc-select"><span class="vc-sr">Beispiel laden</span>
           <select class="vc-examples" id="vc-examples"><option value="">Beispiele …</option>${EXAMPLES.map((e) => `<option value="${e.id}">${e.title}</option>`).join('')}</select>
         </label>
+        <label class="vc-select"><span class="vc-sr">Aufgabe wählen</span>
+          <select class="vc-tasks" id="vc-tasks"></select>
+        </label>
         <span class="vc-host-actions"></span>
         <button type="button" class="vc-btn vc-go" id="vc-run" title="Programm in der Konsole ausführen (F5)">${ICONS.play}<span>Start</span></button>
         <button type="button" class="vc-btn vc-stop" id="vc-stop" title="Programm anhalten" disabled>${ICONS.stop}<span>Stopp</span></button>
@@ -111,11 +140,27 @@ export class BlockEditor {
       <section class="vc-blocks" aria-label="Blöcke"><div class="vc-blockly"></div></section>
       <div class="vc-split" role="separator" aria-orientation="vertical" aria-label="Breite der Code-Spalte ändern" tabindex="0"></div>
       <aside class="vc-side">
+        <section class="vc-task" aria-label="Aufgabe" hidden>
+          <div class="vc-task-head">
+            <span class="vc-task-badge">Aufgabe</span>
+            <h2 class="vc-task-title"></h2>
+            <button type="button" class="vc-icon-btn" id="vc-task-close" title="Aufgabe schließen">${ICONS.close}<span class="vc-sr">Aufgabe schließen</span></button>
+          </div>
+          <p class="vc-task-text"></p>
+          <div class="vc-task-buttons">
+            <button type="button" class="vc-btn vc-small vc-primary" id="vc-task-check">${ICONS.check}<span>Prüfen</span></button>
+            <button type="button" class="vc-btn vc-small" id="vc-task-hint">${ICONS.bulb}<span>Tipp</span></button>
+            <button type="button" class="vc-btn vc-small" id="vc-task-next" hidden><span>Nächste Aufgabe</span>${ICONS.apply}</button>
+          </div>
+          <p class="vc-task-hint-text" hidden></p>
+          <div class="vc-task-result" role="status" aria-live="polite" hidden></div>
+        </section>
         <section class="vc-code">
           <div class="vc-head">
             <h2 class="vc-code-title">Code</h2>
             <div class="vc-head-tools">
               <button type="button" class="vc-icon-btn" id="vc-copy" title="Code kopieren">${ICONS.copy}<span class="vc-sr">Code kopieren</span></button>
+              <button type="button" class="vc-icon-btn vc-fold-btn" id="vc-fold-code" title="Code ein- oder ausklappen" aria-expanded="true">${ICONS.fold}<span class="vc-sr">Code ein- oder ausklappen</span></button>
             </div>
           </div>
           <div class="vc-pending" hidden>
@@ -135,6 +180,7 @@ export class BlockEditor {
             <div class="vc-head-tools">
               <label class="vc-check" title="Führt das Programm langsam aus und zeigt den aktiven Block"><input type="checkbox" id="vc-slow"> Zeitlupe</label>
               <button type="button" class="vc-icon-btn" id="vc-clear" title="Konsole leeren">${ICONS.clear}<span class="vc-sr">Konsole leeren</span></button>
+              <button type="button" class="vc-icon-btn vc-fold-btn" id="vc-fold-console" title="Konsole ein- oder ausklappen" aria-expanded="true">${ICONS.fold}<span class="vc-sr">Konsole ein- oder ausklappen</span></button>
             </div>
           </div>
           <div class="vc-out" role="log" aria-live="polite"><span class="vc-hint">Klicke auf „Start“, um dein Programm auszuführen.</span></div>
@@ -172,6 +218,13 @@ export class BlockEditor {
       drawHint: q('.vc-draw-hint'),
       dialog,
       file: q('.vc-file'),
+      tasks: q('.vc-tasks'),
+      task: q('.vc-task'),
+      taskTitle: q('.vc-task-title'),
+      taskText: q('.vc-task-text'),
+      taskHint: q('.vc-task-hint-text'),
+      taskResult: q('.vc-task-result'),
+      taskNext: q('#vc-task-next'),
     };
     if (this.opts.fileName) this.dom.file.textContent = this.opts.fileName;
 
@@ -190,6 +243,25 @@ export class BlockEditor {
       (this.dom.examples as HTMLSelectElement).value = '';
       if (id) this.loadExample(id);
     });
+    this.fillTaskSelect();
+    this.dom.tasks.addEventListener('change', () => {
+      const id = (this.dom.tasks as HTMLSelectElement).value;
+      (this.dom.tasks as HTMLSelectElement).value = '';
+      if (id) this.startTask(id);
+    });
+    q('#vc-task-check').addEventListener('click', () => this.checkTask());
+    q('#vc-task-hint').addEventListener('click', () => {
+      this.dom.taskHint.hidden = !this.dom.taskHint.hidden;
+    });
+    q('#vc-task-close').addEventListener('click', () => this.closeTask());
+    this.dom.taskNext.addEventListener('click', () => {
+      const i = TASKS.findIndex((t) => t.id === this.task?.id);
+      if (TASKS[i + 1]) this.startTask(TASKS[i + 1].id);
+    });
+    for (const part of ['code', 'console'] as const) {
+      q(`#vc-fold-${part}`).addEventListener('click', () => this.setFolded(part, !this.root.querySelector('.vc-side')!.classList.contains(`fold-${part}`)));
+      if (store.get(`vc-fold-${part}`, false)) this.setFolded(part, true);
+    }
     this.dom.run.addEventListener('click', () => this.run());
     this.dom.stop.addEventListener('click', () => this.stop());
     q('#vc-copy').addEventListener('click', () => this.copyCode());
@@ -663,6 +735,7 @@ export class BlockEditor {
     this.running = true;
     this.stopRequested = false;
     this.setRunUi(true);
+    if (this.root.querySelector('.vc-side')!.classList.contains('fold-console')) this.setFolded('console', false);
     this.dom.out.innerHTML = '';
     this.drawing = null;
     this.renderDrawing();
@@ -801,6 +874,77 @@ export class BlockEditor {
     const res = this.inputResolve;
     this.inputResolve = null;
     res?.('');
+  }
+
+  // ---- folding ---------------------------------------------------------------------------
+
+  /** Collapses or expands the code or the console area. */
+  setFolded(part: 'code' | 'console', folded: boolean) {
+    const side = this.root.querySelector('.vc-side')!;
+    side.classList.toggle(`fold-${part}`, folded);
+    this.root.querySelector(`#vc-fold-${part}`)!.setAttribute('aria-expanded', String(!folded));
+    store.set(`vc-fold-${part}`, folded);
+    if (part === 'console' && !folded) this.renderDrawing();
+  }
+
+  // ---- exercises ---------------------------------------------------------------------------
+
+  private task: Task | null = null;
+
+  private fillTaskSelect() {
+    const solved = new Set(store.get<string[]>('vc-solved', []));
+    const sel = this.dom.tasks as HTMLSelectElement;
+    const groups = [1, 2, 3]
+      .map((level) => {
+        const items = TASKS.filter((t) => t.level === level).map((t) => `<option value="${t.id}">${solved.has(t.id) ? '✓ ' : ''}${escapeHtml(t.title)}</option>`);
+        return items.length ? `<optgroup label="${LEVELS[level]}">${items.join('')}</optgroup>` : '';
+      })
+      .join('');
+    sel.innerHTML = `<option value="">Aufgaben${solved.size ? ` (${solved.size}/${TASKS.length})` : ''} …</option>${groups}`;
+  }
+
+  async startTask(id: string) {
+    const task = TASKS.find((t) => t.id === id);
+    if (!task) return;
+    const hasBlocks = this.ws.getAllBlocks(false).some((b) => b.type !== 'event_start');
+    if (hasBlocks && !(await this.confirm(`Aufgabe „${task.title}“ beginnen? Deine aktuellen Blöcke werden ersetzt.`))) return;
+    this.task = task;
+    this.loadProgram({ main: [], functions: [] }, false);
+    this.dom.taskTitle.textContent = task.title;
+    this.dom.taskText.textContent = task.text;
+    this.dom.taskHint.textContent = `Tipp: ${task.hint}`;
+    this.dom.taskHint.hidden = true;
+    this.dom.taskResult.hidden = true;
+    this.dom.taskNext.hidden = true;
+    this.dom.task.hidden = false;
+    this.scrollToStart();
+  }
+
+  closeTask() {
+    this.task = null;
+    this.dom.task.hidden = true;
+  }
+
+  async checkTask() {
+    if (!this.task) return;
+    clearTimeout(this.changeTimer);
+    this.refresh(false);
+    const res = await checkTask(this.task, this.lastProgram, this.lang);
+    const box = this.dom.taskResult;
+    box.hidden = false;
+    box.classList.toggle('is-ok', res.ok);
+    if (res.ok) {
+      const solved = new Set(store.get<string[]>('vc-solved', []));
+      solved.add(this.task.id);
+      store.set('vc-solved', [...solved]);
+      this.fillTaskSelect();
+      const last = TASKS[TASKS.length - 1].id === this.task.id;
+      box.innerHTML = `<strong>Geschafft!</strong> ${last ? 'Du hast alle Aufgaben gelöst.' : 'Weiter geht’s mit der nächsten Aufgabe.'}`;
+      this.dom.taskNext.hidden = last;
+    } else {
+      box.innerHTML = `<strong>Noch nicht ganz.</strong>${res.messages.map((m) => `<p>${escapeHtml(m)}</p>`).join('')}`;
+      this.dom.taskNext.hidden = true;
+    }
   }
 
   private setRunUi(running: boolean) {

@@ -14,6 +14,9 @@
   --stop: #cf3f3f;
   --note-bg: #fff3d1;
   --note-fg: #6e4b00;
+  --ok-bg: #e3f6ea;
+  --ok-fg: #13612f;
+  --task-bg: #eef4fd;
   --code-bg: #fbfcfe;
   --code-active: rgba(47, 120, 200, 0.06);
   --code-sel: rgba(47, 120, 200, 0.22);
@@ -50,6 +53,9 @@
     --stop: #e05d5d;
     --note-bg: #3a2f13;
     --note-fg: #f3d27c;
+    --ok-bg: #143823;
+    --ok-fg: #8ee0aa;
+    --task-bg: #1a2436;
     --code-bg: #141924;
     --code-active: rgba(90, 162, 238, 0.08);
     --code-sel: rgba(90, 162, 238, 0.3);
@@ -79,6 +85,9 @@
   --stop: #e05d5d;
   --note-bg: #3a2f13;
   --note-fg: #f3d27c;
+  --ok-bg: #143823;
+  --ok-fg: #8ee0aa;
+  --task-bg: #1a2436;
   --code-bg: #141924;
   --code-active: rgba(90, 162, 238, 0.08);
   --code-sel: rgba(90, 162, 238, 0.3);
@@ -263,6 +272,7 @@ body {
   font-size: 12.5px;
 }
 .vc-select select {
+  max-width: 150px;
   font: inherit;
   font-weight: 700;
   font-size: 13px;
@@ -304,7 +314,7 @@ body {
 }
 .vc-side {
   display: grid;
-  grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1.25fr) minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: var(--panel);
@@ -417,6 +427,100 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* ---- folding code / console ---- */
+.vc-fold-btn svg {
+  transition: transform 0.15s;
+}
+.vc-fold-btn[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+.vc-side.fold-code {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.vc-side.fold-console {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.vc-side.fold-code.fold-console {
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+.vc-side.fold-code .vc-code > :not(.vc-head),
+.vc-side.fold-console .vc-console > :not(.vc-head) {
+  display: none !important;
+}
+.vc-side.fold-code .vc-code > .vc-head,
+.vc-side.fold-console .vc-console > .vc-head {
+  border-bottom: 0;
+}
+
+/* ---- exercise card ---- */
+.vc-task {
+  background: var(--task-bg);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px 12px 16px;
+  max-height: 45vh;
+  overflow: auto;
+}
+.vc-task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vc-task-badge {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.vc-task-title {
+  margin: 0;
+  flex: 1;
+  font-size: 15px;
+  font-weight: 800;
+}
+.vc-task-text,
+.vc-task-hint-text {
+  margin: 6px 0 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+.vc-task-hint-text {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--note-bg);
+  color: var(--note-fg);
+}
+.vc-task-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.vc-task-result {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--note-bg);
+  color: var(--note-fg);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.vc-task-result.is-ok {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+.vc-task-result p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
 }
 .vc-cm .cm-editor {
   height: 100%;
@@ -589,7 +693,7 @@ body {
 }
 
 /* ---- medium screens: icon-only secondary buttons ---- */
-@media (max-width: 1360px) {
+@media (max-width: 1560px) {
   .vc-host-actions .vc-btn span {
     position: absolute;
     width: 1px;
@@ -600,6 +704,11 @@ body {
   }
   .vc-host-actions .vc-btn {
     padding-inline: 9px;
+  }
+}
+@media (max-width: 1360px) {
+  .vc-select select {
+    max-width: 120px;
   }
 }
 @media (max-width: 1100px) {
@@ -628,8 +737,13 @@ body {
   .vc-split {
     display: none;
   }
-  .vc-side {
-    grid-template-rows: auto auto;
+  .vc-side,
+  .vc-side.fold-code,
+  .vc-side.fold-console {
+    grid-template-rows: auto auto auto;
+  }
+  .vc-task {
+    max-height: none;
   }
   .vc-cm {
     height: 300px;

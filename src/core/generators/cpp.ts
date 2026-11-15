@@ -73,6 +73,11 @@ export class CppGen extends CLikeGen {
     return `keysOf(${this.sub(dict)})`;
   }
 
+  protected override useHelper(name: string) {
+    if (name === 'keysOf' || name === 'valuesOf') this.warn('In C++ (std::map) werden die Schlüssel eines Wörterbuchs sortiert durchlaufen, nicht in der Reihenfolge des Eintragens.');
+    super.useHelper(name);
+  }
+
   protected emptyLine(): string {
     return 'cout << endl';
   }

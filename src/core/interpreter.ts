@@ -3,7 +3,7 @@
 import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
 import { CTOR, methodPlace } from './ir';
-import { findLibFn, isExternalLib } from './library';
+import { dictKeys, findLibFn, isExternalLib } from './library';
 
 export interface RunHost {
   /** Text to show in the console (contains "\n" where a line ends). */
@@ -379,7 +379,7 @@ class Runner {
       case 'foreach': {
         let list = await this.expr(s.list);
         if (typeof list === 'string') list = [...list];
-        if (list instanceof Map) list = [...list.keys()];
+        if (list instanceof Map) list = dictKeys(list, this.lang === 'cpp');
         if (!Array.isArray(list)) this.err('"für jedes Element" braucht eine Liste.');
         for (let i = 0; i < list.length; i++) {
           this.set(s.var, list[i]);
@@ -523,6 +523,7 @@ class Runner {
         }
       },
       error: (m) => this.err(m),
+      sortedKeys: this.lang === 'cpp',
     });
   }
 

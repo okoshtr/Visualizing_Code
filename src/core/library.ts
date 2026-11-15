@@ -56,6 +56,15 @@ export interface LibRuntime {
   error(message: string): never;
   /** Drawing ("Zeichnen" library). */
   turtle(op: string, args: any[]): void;
+  /** C++ (std::map) goes through the keys of a dictionary in sorted order. */
+  sortedKeys?: boolean;
+}
+
+/** Keys of a dictionary in the order the language goes through them. */
+export function dictKeys(d: Map<any, any>, sorted = false): any[] {
+  const keys = [...d.keys()];
+  if (!sorted) return keys;
+  return keys.sort((a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
 }
 
 export interface Library {
@@ -616,7 +625,7 @@ export const LIBRARIES: Library[] = [
           cpp: T('keysOf({0})', { helpers: ['keysOf'] }),
           vba: '{0}.Keys',
         },
-        run: ([d], rt) => [...checkDict(d, rt).keys()],
+        run: ([d], rt) => dictKeys(checkDict(d, rt), rt.sortedKeys),
       },
       {
         id: 'values',
@@ -631,7 +640,10 @@ export const LIBRARIES: Library[] = [
           cpp: T('valuesOf({0})', { helpers: ['valuesOf'] }),
           vba: '{0}.Items',
         },
-        run: ([d], rt) => [...checkDict(d, rt).values()],
+        run: ([d], rt) => {
+          const map = checkDict(d, rt);
+          return dictKeys(map, rt.sortedKeys).map((k) => map.get(k));
+        },
       },
       {
         id: 'size',

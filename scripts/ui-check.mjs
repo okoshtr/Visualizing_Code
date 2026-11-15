@@ -45,6 +45,26 @@ try {
   const loops = await page.evaluate(() => window.vcEditor.ws.getAllBlocks(false).filter((b) => b.type === 'controls_for').length);
   assert.equal(loops, 1, 'for loop block created');
 
+  // exercise: empty program fails, a correct one passes and is remembered
+  await page.selectOption('#vc-tasks', 'countdown');
+  await page.click('.vc-dialog [data-v="ok"]').catch(() => {});
+  await page.waitForTimeout(400);
+  await page.click('#vc-task-check');
+  await page.waitForTimeout(300);
+  assert.match(await page.textContent('.vc-task-result'), /Noch nicht ganz/);
+  await page.evaluate(() => window.vcEditor.loadCode('for i in range(10, 0, -1):\n    print(i)\nprint("Start!")\n', 'python'));
+  await page.waitForTimeout(300);
+  await page.click('#vc-task-check');
+  await page.waitForTimeout(300);
+  assert.match(await page.textContent('.vc-task-result'), /Geschafft/);
+  assert.match(await page.textContent('#vc-tasks option'), /1\/\d+/);
+
+  // folding the code area and expanding it again
+  await page.click('#vc-fold-code');
+  assert.equal(await page.isVisible('.vc-cm'), false);
+  await page.click('#vc-fold-code');
+  assert.equal(await page.isVisible('.vc-cm'), true);
+
   // every sample file goes through the real Blockly editor without losing anything
   const dir = new URL('../tests/samples/', import.meta.url);
   for (const file of readdirSync(dir)) {

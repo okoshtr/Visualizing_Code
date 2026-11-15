@@ -10,3 +10,6 @@ export { runProgram, RunError, formatValue } from './interpreter';
 export type { RunHost } from './interpreter';
 export { LIBRARIES, findLib, findLibFn, isExternalLib, externalModule } from './library';
 export { EXAMPLES } from './examples';
+export { TASKS, checkTask } from './tasks';
+export type { Task, TaskResult } from './tasks';
+export { KNOWN_PACKAGES } from './packages';
