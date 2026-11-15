@@ -52,8 +52,11 @@ function csharpProject(): string {
   return csDir;
 }
 
+/** Programs run in a temporary folder (they may write files such as zeichnung.svg). */
+const workDir = mkdtempSync(join(tmpdir(), 'vc-run-'));
+
 function exec(cmd: string, args: string[], input: string, env: Record<string, string> = {}): string {
-  const r = spawnSync(cmd, args, { input, encoding: 'utf8', env: { ...process.env, JAVA_TOOL_OPTIONS: '', ...env } });
+  const r = spawnSync(cmd, args, { input, encoding: 'utf8', cwd: workDir, env: { ...process.env, JAVA_TOOL_OPTIONS: '', ...env } });
   if (r.status !== 0) throw new Error(`${cmd} failed: ${r.stderr}`);
   return r.stdout;
 }

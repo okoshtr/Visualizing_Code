@@ -3,3 +3,4 @@ dist/
 extension/dist/
 *.vsix
 test-output/
+zeichnung.svg

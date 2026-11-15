@@ -11,7 +11,8 @@
     "test": "vitest run",
     "serve": "node scripts/serve.mjs",
     "test:ui": "node scripts/ui-check.mjs",
-    "package:vscode": "node scripts/build.mjs extension && cd extension && npx --yes @vscode/vsce@3 package --no-dependencies --skip-license"
+    "package:vscode": "node scripts/build.mjs extension && cd extension && npx --yes @vscode/vsce@3 package --no-dependencies --skip-license",
+    "test:vscode": "node scripts/vscode-test.mjs"
   },
   "devDependencies": {
     "@blockly/continuous-toolbox": "^13.4.0",
@@ -29,6 +30,7 @@
     "@lezer/highlight": "^1.2.5",
     "@types/node": "^22.20.5",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
     "blockly": "^13.4.0",
     "codemirror": "^6.0.2",
     "esbuild": "^0.28.2",
