@@ -216,6 +216,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
     for (const s of stmts) {
       const b = stmt(s);
       if (!b) continue;
+      if (s.gap) b.data = JSON.stringify({ ...readData(b), gap: true });
+      if (s.trail) b.icons = { comment: { text: s.trail, pinned: false, height: 60, width: 220 } };
       if (!first) first = b;
       if (last) last.next = { block: b };
       last = b;
@@ -396,8 +398,14 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
     const out: Stmt[] = [];
     while (b) {
       if (b.enabled !== false && !b.disabledReasons?.length) {
-        const s = stmt(b);
-        if (s) out.push(b.id ? { ...s, id: b.id } : s);
+        let s = stmt(b);
+        if (s) {
+          if (b.id) s = { ...s, id: b.id };
+          if (readData(b).gap) s = { ...s, gap: true };
+          const trail = b.icons?.comment?.text;
+          if (trail) s = { ...s, trail };
+          out.push(s);
+        }
       }
       b = b.next?.block;
     }

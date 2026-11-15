@@ -36,6 +36,10 @@ interface Node {
   id?: string;
   /** Source text (only set by the parsers, used for fallbacks). */
   src?: string;
+  /** Statement: an empty line comes before it. */
+  gap?: boolean;
+  /** Statement: comment at the end of its (last) line. */
+  trail?: string;
 }
 
 export type Expr = Node &

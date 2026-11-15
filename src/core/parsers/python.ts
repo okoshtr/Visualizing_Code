@@ -2,7 +2,7 @@
 
 import type { Ex, Expr, FunctionDef, ImportInfo, Program, Stmt } from '../ir';
 import { assignedNames, walkAllExprs } from '../ir';
-import { ParseError, type ParseResult, type Token, isIdentChar, isIdentStart, lineOf, negate, rawStmt, unescape } from './common';
+import { ParseError, type ParseResult, type Token, isIdentChar, isIdentStart, isTrailing, lineOf, markGap, negate, rawStmt, unescape } from './common';
 import { foldPlus } from '../generators/base';
 import { normalize } from './normalize';
 
@@ -219,6 +219,22 @@ class PyParser {
 
   /** Parses one statement; on error the statement becomes a raw code block. */
   statementSafe(): Stmt[] {
+    const start = this.p;
+    const pos = this.toks[start].s;
+    const out = markGap(this.statementInner(), this.src, pos);
+    // comment at the end of the line belongs to the statement
+    if (out.length && this.cur() === 'comment' && isTrailing(this.src, this.tok.s)) {
+      const last = out[out.length - 1];
+      if (last.k !== 'comment' && last.k !== 'if' && last.k !== 'while' && last.k !== 'for' && last.k !== 'foreach' && last.k !== 'repeat') {
+        out[out.length - 1] = { ...last, trail: this.tok.v.replace(/^ /, '') };
+        this.p++;
+        this.eat('', 'nl');
+      }
+    }
+    return out;
+  }
+
+  statementInner(): Stmt[] {
     const start = this.p;
     try {
       return this.statement();

@@ -20,14 +20,15 @@ function fakeVscode() {
     Uri,
     ViewColumn: { Beside: 2 },
     Range: class {
+      args: any[];
       constructor(...a: any[]) {
-        void a;
+        this.args = a;
       }
     },
     WorkspaceEdit: class {
       text = '';
-      replace(_u: any, _r: any, text: string) {
-        this.text = text;
+      replace(_u: any, r: any, text: string) {
+        this.text = JSON.stringify([r.args[0], r.args[1], text]);
       }
     },
     window: {
@@ -66,7 +67,7 @@ describe.skipIf(!existsSync(bundle))('VS Code extension host', () => {
 
       // open a Python file in the "as blocks" editor
       let text = 'print("Hallo")\n';
-      const document = { uri: { toString: () => 'file:///a.py' }, fileName: '/tmp/a.py', lineCount: 1, isUntitled: false, getText: () => text, save: async () => true };
+      const document = { uri: { toString: () => 'file:///a.py' }, fileName: '/tmp/a.py', lineCount: 1, isUntitled: false, getText: () => text, save: async () => true, positionAt: (o: number) => o };
       const posted: any[] = [];
       let onMessage: any;
       const panel = {
@@ -85,8 +86,8 @@ describe.skipIf(!existsSync(bundle))('VS Code extension host', () => {
       await onMessage({ type: 'ready' });
       expect(posted[0]).toMatchObject({ type: 'init', mode: 'source', lang: 'python', text });
       await onMessage({ type: 'edit', text: 'print("Hallo Welt")\n' });
-      expect(fake.applied).toEqual(['print("Hallo Welt")\n']);
-      text = fake.applied[0];
+      // only the changed part is replaced: offsets 12..12 get " Welt"
+      expect(fake.applied).toEqual([JSON.stringify([12, 12, ' Welt'])]);
     } finally {
       (Module as any)._load = origLoad;
     }

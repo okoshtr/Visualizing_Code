@@ -1,5 +1,6 @@
 // Runs inside the VS Code webview.
 import '../ui/styles.css';
+import * as Blockly from 'blockly/core';
 import { BlockEditor, type EditorDocument } from '../ui/editor';
 import type { Lang } from '../core/ir';
 
@@ -42,6 +43,14 @@ window.addEventListener('message', (event) => {
         { id: 'export', label: 'Code exportieren', title: 'Code in einer beliebigen Sprache als Datei speichern', icon: ICON.export, onClick: () => vscode.postMessage({ type: 'export', doc: editor!.document() }) },
       ],
     });
+    // Undo/redo are handled by VS Code on the document; Blockly must not undo a second time.
+    for (const name of ['undo', 'redo']) {
+      try {
+        Blockly.ShortcutRegistry.registry.unregister(name);
+      } catch {
+        /* not registered */
+      }
+    }
     load(msg.text, false);
     new MutationObserver(() => {
       applyVsCodeTheme();

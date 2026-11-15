@@ -332,7 +332,16 @@ export abstract class BaseGen {
   protected abstract stmt(s: Stmt): void;
 
   protected body(stmts: Stmt[]) {
-    for (const s of stmts) this.stmt(s);
+    stmts.forEach((s, i) => {
+      if (s.gap && i > 0) this.blank();
+      const multiline = !!s.trail && s.trail.includes('\n');
+      if (multiline) this.comment(s.trail!);
+      const before = this.lines.length;
+      this.stmt(s);
+      if (s.trail && !multiline && this.lines.length > before) {
+        this.lines[this.lines.length - 1] += `${this.lang === 'python' ? '  ' : ' '}${this.commentPrefix} ${s.trail}`;
+      }
+    });
   }
 
   /** for-loop analysis shared by several languages. */

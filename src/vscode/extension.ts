@@ -46,10 +46,13 @@ class BlockEditorProvider implements vscode.CustomTextEditorProvider {
           });
           break;
         case 'edit': {
-          if (msg.text === document.getText()) return;
+          const old = document.getText();
+          if (msg.text === old) return;
           lastText = msg.text;
+          // only replace the part that changed (keeps cursor positions and makes undo steps small)
+          const { start, endOld, endNew } = changedRange(old, msg.text);
           const edit = new vscode.WorkspaceEdit();
-          edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), msg.text);
+          edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(endOld)), msg.text.slice(start, endNew));
           await vscode.workspace.applyEdit(edit);
           break;
         }
@@ -99,6 +102,20 @@ class BlockEditorProvider implements vscode.CustomTextEditorProvider {
 </body>
 </html>`;
   }
+}
+
+/** Smallest range that differs between two texts. */
+export function changedRange(a: string, b: string): { start: number; endOld: number; endNew: number } {
+  let start = 0;
+  const max = Math.min(a.length, b.length);
+  while (start < max && a[start] === b[start]) start++;
+  let endOld = a.length;
+  let endNew = b.length;
+  while (endOld > start && endNew > start && a[endOld - 1] === b[endNew - 1]) {
+    endOld--;
+    endNew--;
+  }
+  return { start, endOld, endNew };
 }
 
 function terminal(): vscode.Terminal {

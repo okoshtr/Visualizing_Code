@@ -3,7 +3,7 @@
 import type { Ex, Expr, FunctionDef, Program, Stmt, TypeName } from '../ir';
 import { walkStmts } from '../ir';
 import { helperNames } from '../library';
-import { ParseError, type ParseResult, type Token, lineOf, negate, rawStmt } from './common';
+import { ParseError, type ParseResult, type Token, isTrailing, lineOf, markGap, negate, rawStmt } from './common';
 import { normalize } from './normalize';
 
 const OPS = ['<>', '<=', '>=', ':=', '=', '<', '>', '+', '-', '*', '/', '\\', '^', '&', '(', ')', ',', '.', ':', ';', '#', '!'];
@@ -335,13 +335,21 @@ class VbaParser {
       if (this.cur() === 'eof') this.fail('"End" fehlt.');
       if (stop()) break;
       const start = this.p;
+      let got: Stmt[];
       try {
-        out.push(...this.statement());
+        got = this.statement();
       } catch (err) {
         if (!(err instanceof ParseError)) throw err;
         this.p = start;
-        out.push(this.recoverStatement(start));
+        got = [this.recoverStatement(start)];
       }
+      got = markGap(got, this.src, this.toks[start].s);
+      // comment at the end of the line
+      if (got.length && this.cur() === 'comment' && isTrailing(this.src, this.tok.s) && got[got.length - 1].k !== 'comment') {
+        got[got.length - 1] = { ...got[got.length - 1], trail: this.tok.v };
+        this.p++;
+      }
+      out.push(...got);
     }
     return mergeListAdds(out);
   }

@@ -56,5 +56,30 @@ export function unescape(body: string): string {
   });
 }
 
+export function lineStartOf(src: string, pos: number): number {
+  let i = pos;
+  while (i > 0 && src[i - 1] !== '\n') i--;
+  return i;
+}
+
+/** Is the line before the one containing `pos` empty (and not at the start of the file)? */
+export function blankLineBefore(src: string, pos: number): boolean {
+  const ls = lineStartOf(src, pos);
+  if (ls === 0) return false;
+  const prev = lineStartOf(src, ls - 1);
+  return src.slice(prev, ls).trim() === '' && src.slice(0, prev).trim() !== '';
+}
+
+/** Is there code before `pos` on the same line (i.e. a comment at the end of a line)? */
+export function isTrailing(src: string, pos: number): boolean {
+  return src.slice(lineStartOf(src, pos), pos).trim() !== '';
+}
+
+/** Marks the first statement as following an empty line. */
+export function markGap(stmts: Stmt[], src: string, pos: number): Stmt[] {
+  if (stmts.length && blankLineBefore(src, pos)) stmts[0] = { ...stmts[0], gap: true };
+  return stmts;
+}
+
 export const isIdentStart = (c: string) => /[\p{L}_$]/u.test(c);
 export const isIdentChar = (c: string) => /[\p{L}\p{N}_$]/u.test(c);

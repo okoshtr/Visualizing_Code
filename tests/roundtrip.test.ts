@@ -51,3 +51,21 @@ describe('translating between languages keeps the meaning', () => {
     }
   }
 });
+
+describe('formatting survives code -> blocks -> code', () => {
+  const samples: Record<string, string> = {
+    python: '# Start\nx = 1  # erste Zahl\n\ny = 2\nif x < y:\n    print("kleiner")  # Ausgabe\n\n    print("ende")\n',
+    javascript: 'let x = 1; // erste Zahl\n\nlet y = 2;\nif (x < y) {\n  console.log("kleiner"); // Ausgabe\n}\n',
+    java: 'public class Main {\n    public static void main(String[] args) {\n        int x = 1; // erste Zahl\n\n        int y = 2;\n        System.out.println(x + y);\n    }\n}\n',
+  };
+  for (const [lang, code] of Object.entries(samples)) {
+    it(lang, () => {
+      const program = parse(code, lang as any).program;
+      expect(generate(program, lang as any).code).toBe(code);
+      // also through the blocks
+      const back = fromBlockly(JSON.parse(JSON.stringify(toBlockly(program)))).program;
+      back.meta = program.meta;
+      expect(generate(back, lang as any).code).toBe(code);
+    });
+  }
+});

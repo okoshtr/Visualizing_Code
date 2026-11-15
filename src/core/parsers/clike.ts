@@ -4,7 +4,7 @@ import { foldPlus } from '../generators/base';
 import type { Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt, TypeName } from '../ir';
 import { assignedNames, walkAllExprs, walkStmts } from '../ir';
 import { helperNames } from '../library';
-import { ParseError, type ParseResult, type Token, isIdentChar, isIdentStart, lineOf, negate, rawStmt, unescape } from './common';
+import { ParseError, type ParseResult, type Token, blankLineBefore, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
 import { normalize } from './normalize';
 
 type CLang = Exclude<Lang, 'python' | 'vba'>;
@@ -294,7 +294,8 @@ class CParser {
   commentsBefore(pos: number): Stmt[] {
     const out: Stmt[] = [];
     while (this.ci < this.comments.length && this.comments[this.ci].s < pos) {
-      out.push({ k: 'comment', text: this.comments[this.ci].text });
+      const c = this.comments[this.ci];
+      out.push(blankLineBefore(this.src, c.s) ? { k: 'comment', text: c.text, gap: true } : { k: 'comment', text: c.text });
       this.ci++;
     }
     return out;
@@ -387,7 +388,7 @@ class CParser {
           this.functionDecl(null);
           return;
         }
-        out.push(...this.statement());
+        out.push(...this.topStatement());
         return;
       }
       if (this.lang === 'cpp') {
@@ -407,7 +408,7 @@ class CParser {
       }
       // C# top-level statements
       this.p = save;
-      out.push(...this.statement());
+      out.push(...this.topStatement());
     } catch (err) {
       if (!(err instanceof ParseError)) throw err;
       this.p = start;
@@ -655,14 +656,36 @@ class CParser {
     const comments = this.commentsBefore(this.tok.s);
     const start = this.p;
     const ci = this.ci;
+    let out: Stmt[];
     try {
-      return [...comments, ...this.statement()];
+      out = this.statement();
     } catch (err) {
       if (!(err instanceof ParseError)) throw err;
       this.p = start;
       this.ci = ci;
-      return [...comments, this.recover(start)];
+      out = [this.recover(start)];
     }
+    out = markGap(out, this.src, this.toks[start].s);
+    this.attachTrailing(out);
+    return [...comments, ...out];
+  }
+
+  /** Statement at the top level (JavaScript, C# top-level statements). */
+  topStatement(): Stmt[] {
+    const start = this.p;
+    const out = markGap(this.statement(), this.src, this.toks[start].s);
+    this.attachTrailing(out);
+    return out;
+  }
+
+  /** A comment at the end of the statement's last line becomes part of the statement. */
+  attachTrailing(out: Stmt[]) {
+    const c = this.comments[this.ci];
+    if (!out.length || !c || this.p === 0) return;
+    const lastEnd = this.toks[this.p - 1].e;
+    if (c.s < lastEnd || c.s > this.tok.s || this.src.slice(lastEnd, c.s).includes('\n') || c.text.includes('\n')) return;
+    out[out.length - 1] = { ...out[out.length - 1], trail: c.text };
+    this.ci++;
   }
 
   /** Skips a statement that cannot be parsed and returns it as raw code. */

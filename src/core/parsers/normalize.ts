@@ -422,8 +422,11 @@ class Normalizer {
 
   stmt(s: Stmt): Stmt | null {
     switch (s.k) {
-      case 'pexpr':
-        return this.exprStmt(s.e);
+      case 'pexpr': {
+        const r = this.exprStmt(s.e);
+        if (!r) return r;
+        return { ...r, ...(s.gap ? { gap: true } : {}), ...(s.trail ? { trail: s.trail } : {}) };
+      }
       case 'print':
         return { ...s, value: this.expr(s.value) };
       case 'set':
