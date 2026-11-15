@@ -244,6 +244,8 @@ export class BlockEditor {
       if (id) this.loadExample(id);
     });
     this.fillTaskSelect();
+    // exercises start a new program; a code file opened as blocks would be overwritten
+    if (this.opts.mode === 'source') (this.dom.tasks.closest('.vc-select') as HTMLElement).hidden = true;
     this.dom.tasks.addEventListener('change', () => {
       const id = (this.dom.tasks as HTMLSelectElement).value;
       (this.dom.tasks as HTMLSelectElement).value = '';
