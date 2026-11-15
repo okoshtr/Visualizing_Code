@@ -1,6 +1,6 @@
 // Runs a program directly (the "green flag"). Works the same for all languages.
 
-import { type Analysis, MAIN, analyze, isList } from './analysis';
+import { type Analysis, MAIN, type Ty, analyze, elemOf, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
 import { findLibFn, isExternalLib } from './library';
 
@@ -31,17 +31,77 @@ class Return {
 
 type Frame = { place: string; vars: Map<string, any> };
 
-export function formatValue(v: any, lang: Lang, nested = false): string {
+/**
+ * Formats a value the way the real program in `lang` would print it.
+ * `ty` is the static type (int / double / list<...>) so that 7.0 prints as "7.0" in Java and Python.
+ * `printed`: the value is printed directly (JavaScript prints lists differently than it converts them).
+ */
+export function formatValue(v: any, lang: Lang, ty: Ty = '', printed = false, nested = false): string {
   if (typeof v === 'boolean') return ['python', 'csharp', 'vba'].includes(lang) ? (v ? 'True' : 'False') : v ? 'true' : 'false';
-  if (typeof v === 'number') {
-    if (Number.isNaN(v)) return 'NaN';
-    if (!Number.isFinite(v)) return v > 0 ? 'Infinity' : '-Infinity';
-    return String(Math.round(v * 1e12) / 1e12 === Math.round(v) ? Math.round(v) : v);
+  if (typeof v === 'number') return formatNumber(v, lang, ty === 'double' || (!Number.isInteger(v) && ty !== 'int'));
+  if (Array.isArray(v)) {
+    const el = elemOf(ty);
+    if (lang === 'javascript') {
+      if (!printed && !nested) return v.map((x) => formatValue(x, lang, el)).join(',');
+      const items = v.map((x) => (typeof x === 'string' ? `'${x}'` : formatValue(x, lang, el, true, true)));
+      return items.length ? `[ ${items.join(', ')} ]` : '[]';
+    }
+    return '[' + v.map((x) => formatValue(x, lang, el, printed, true)).join(', ') + ']';
   }
-  if (Array.isArray(v)) return '[' + v.map((x) => formatValue(x, lang, true)).join(', ') + ']';
   if (typeof v === 'string' && nested && lang === 'python') return `'${v}'`;
   if (v === undefined || v === null) return '';
   return String(v);
+}
+
+function formatNumber(v: number, lang: Lang, isDouble: boolean): string {
+  if (Number.isNaN(v)) return lang === 'python' ? 'nan' : 'NaN';
+  if (!Number.isFinite(v)) return lang === 'python' ? (v > 0 ? 'inf' : '-inf') : v > 0 ? 'Infinity' : '-Infinity';
+  if (!isDouble) return String(v);
+  switch (lang) {
+    case 'python':
+      return Number.isInteger(v) && Math.abs(v) < 1e16 ? v.toFixed(1) : String(v).replace(/e\+?/, 'e+').replace('e+-', 'e-');
+    case 'java': {
+      const a = Math.abs(v);
+      if (a !== 0 && (a >= 1e7 || a < 1e-3)) {
+        const [m, ex] = v.toExponential().split('e');
+        return `${m.includes('.') ? m : m + '.0'}E${Number(ex)}`;
+      }
+      return Number.isInteger(v) ? v.toFixed(1) : String(v);
+    }
+    case 'cpp':
+      return formatG(v, 6);
+    case 'vba':
+      return String(Number(v.toPrecision(15)));
+    default:
+      return String(v);
+  }
+}
+
+/** printf("%g") */
+function formatG(v: number, digits: number): string {
+  if (v === 0) return '0';
+  const exp = Math.floor(Math.log10(Math.abs(v)));
+  if (exp < -4 || exp >= digits) {
+    const [m, e] = v.toExponential(digits - 1).split('e');
+    const mant = m.includes('.') ? m.replace(/0+$/, '').replace(/\.$/, '') : m;
+    const n = Number(e);
+    return `${mant}e${n < 0 ? '-' : '+'}${String(Math.abs(n)).padStart(2, '0')}`;
+  }
+  const s = v.toFixed(Math.max(0, digits - 1 - exp));
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+}
+
+/** Rounding as the language's round function does it. */
+function roundLike(x: number, lang: Lang): number {
+  if (lang === 'python' || lang === 'csharp' || lang === 'vba') {
+    const f = Math.floor(x);
+    const diff = x - f;
+    if (diff > 0.5) return f + 1;
+    if (diff < 0.5) return f;
+    return f % 2 === 0 ? f : f + 1; // half to even
+  }
+  if (lang === 'cpp') return Math.sign(x) * Math.round(Math.abs(x)); // half away from zero
+  return Math.round(x); // Java, JavaScript: half up
 }
 
 export async function runProgram(program: Program, host: RunHost, lang: Lang): Promise<void> {
@@ -77,6 +137,11 @@ class Runner {
       if (e instanceof Break || e instanceof Continue) return;
       throw e;
     }
+  }
+
+  /** Static type of an expression in the current function. */
+  ty(e: Ex): Ty {
+    return e ? this.a.typeOf(e, this.frame.place) : '';
   }
 
   get frame(): Frame {
@@ -141,7 +206,7 @@ class Runner {
     switch (s.k) {
       case 'print': {
         const v = await this.expr(s.value);
-        this.host.write(formatValue(v, this.lang) + (s.newline ? '\n' : ''));
+        this.host.write(formatValue(v, this.lang, this.ty(s.value), true) + (s.newline ? '\n' : ''));
         return;
       }
       case 'set':
@@ -348,7 +413,7 @@ class Runner {
           case 'pow10':
             return 10 ** x;
           case 'round':
-            return Math.round(x);
+            return roundLike(x, this.lang);
           case 'ceil':
             return Math.ceil(x);
           case 'floor':
@@ -363,7 +428,7 @@ class Runner {
       }
       case 'join': {
         let out = '';
-        for (const p of e.parts) out += formatValue(await this.expr(p), this.lang);
+        for (const p of e.parts) out += formatValue(await this.expr(p), this.lang, this.ty(p));
         return out;
       }
       case 'len': {
@@ -380,7 +445,7 @@ class Runner {
       }
       case 'convert': {
         const v = await this.expr(e.a);
-        if (e.to === 'text') return formatValue(v, this.lang);
+        if (e.to === 'text') return formatValue(v, this.lang, this.ty(e.a));
         if (typeof v === 'number') return e.to === 'int' ? Math.trunc(v) : v;
         return this.toNumber(formatValue(v, this.lang), e.to === 'int');
       }
@@ -435,7 +500,7 @@ class Runner {
     this.current = e.id ?? this.current;
     switch (e.op) {
       case 'ADD':
-        if (typeof a === 'string' || typeof b === 'string') return formatValue(a, this.lang) + formatValue(b, this.lang);
+        if (typeof a === 'string' || typeof b === 'string') return formatValue(a, this.lang, this.ty(e.a)) + formatValue(b, this.lang, this.ty(e.b));
         if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
         return this.num(a) + this.num(b);
       case 'SUB':
@@ -449,13 +514,13 @@ class Runner {
       case 'IDIV': {
         if (this.num(b) === 0) this.err('Durch 0 kann man nicht teilen.');
         const q = this.num(a) / this.num(b);
-        return this.lang === 'python' ? Math.floor(q) : Math.trunc(q);
+        return e.trunc ? Math.trunc(q) : Math.floor(q);
       }
       case 'MOD': {
         if (this.num(b) === 0) this.err('Durch 0 kann man nicht teilen.');
         const x = this.num(a);
         const y = this.num(b);
-        return this.lang === 'python' ? ((x % y) + y) % y : x % y;
+        return e.trunc ? x % y : ((x % y) + y) % y;
       }
       case 'POW':
         return this.num(a) ** this.num(b);

@@ -110,6 +110,19 @@ export class JavaGen extends CLikeGen {
     return super.eqCode(a, b, neg);
   }
 
+  protected floorFn(): string {
+    return 'Math.floor';
+  }
+
+  protected floorDivInts(a: Ex, b: Ex): Code {
+    return [`Math.floorDiv(${this.sub(a)}, ${this.sub(b)})`, ATOM];
+  }
+
+  protected modCode(e: Expr & { k: 'bin' }): Code {
+    if (!this.nativeDivOk(e, true) && this.bothInt(e.a, e.b)) return [`Math.floorMod(${this.sub(e.a)}, ${this.sub(e.b)})`, ATOM];
+    return super.modCode(e);
+  }
+
   protected powCode(a: Ex, b: Ex): Code {
     return [`Math.pow(${this.sub(a)}, ${this.sub(b)})`, ATOM];
   }
@@ -146,7 +159,8 @@ export class JavaGen extends CLikeGen {
         this.blank();
       }
     });
-    const className = this.opts.className ?? this.program.meta?.className ?? 'Main';
+    const meta = this.program.meta;
+    const className = this.opts.className ?? (meta?.sourceLang === 'java' ? meta.className : undefined) ?? 'Main';
     const bodyParts = [fields, helpers, ...fns, main].filter((p) => p.length);
     const inner: string[] = [];
     bodyParts.forEach((p, i) => {

@@ -44,7 +44,8 @@ export type Expr = Node &
     | { k: 'str'; v: string }
     | { k: 'bool'; v: boolean }
     | { k: 'var'; name: string }
-    | { k: 'bin'; op: BinOp; a: Ex; b: Ex }
+    /** For IDIV/MOD: trunc = round toward zero (Java, C#, C++, JS, VBA); default = round down (Python). */
+    | { k: 'bin'; op: BinOp; a: Ex; b: Ex; trunc?: boolean }
     | { k: 'not'; a: Ex }
     | { k: 'math'; fn: MathFn; a: Ex }
     | { k: 'random'; from: Ex; to: Ex }
@@ -137,6 +138,8 @@ export interface ProgramMeta {
   className?: string;
   /** VBA: name of the Sub that is the main program (default "Main"). */
   mainName?: string;
+  /** Language the program was read from (className / mainName only apply there). */
+  sourceLang?: Lang;
 }
 
 export interface Program {

@@ -801,6 +801,7 @@ class CParser {
       return rawStmt(this.srcFrom(start) + ';', this.lang);
     }
     if (this.lang === 'cpp' && e.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'srand') return { k: 'comment', text: '__drop__' };
+    if (e.k === 'pbin' && e.op === '=' && e.a?.k === 'member' && e.a.name === 'CurrentCulture') return { k: 'comment', text: '__drop__' };
     if (e.k === 'punary' && (e.op === '++' || e.op === '--') && e.a?.k === 'var') {
       return { k: 'change', name: e.a.name, by: { k: 'num', v: e.op === '++' ? 1 : -1 } };
     }

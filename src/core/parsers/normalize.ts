@@ -22,6 +22,8 @@ const conv = (to: any) => (h: Holes): Expr => ({ k: 'convert', to, a: h[0] });
 const ask = (as: any) => (h: Holes): Expr => ({ k: 'ask', prompt: h[0] ?? { k: 'str', v: '' }, as });
 const len = (of: any) => (h: Holes): Expr => ({ k: 'len', of, a: h[0] });
 const bin = (op: any) => (h: Holes): Expr => ({ k: 'bin', op, a: h[0], b: h[1] });
+/** Integer division / remainder with explicit rounding: trunc (toward zero) or floor (down). */
+const idiv = (op: 'IDIV' | 'MOD', trunc: boolean) => (h: Holes): Expr => ({ k: 'bin', op, a: h[0], b: h[1], trunc });
 /** random(from = h[1], size = h[0]) */
 const rnd = (h: Holes): Expr => {
   const from = h[1] ?? n(0);
@@ -56,11 +58,20 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['math.ceil({0})', math('ceil')],
     ['math.floor({0})', math('floor')],
     ['math.pow({0}, {1})', bin('POW')],
+    ['int({0} / {1})', idiv('IDIV', true)],
+    ['int(math.fmod({0}, {1}))', idiv('MOD', true)],
+    ['math.fmod({0}, {1})', idiv('MOD', true)],
     ['random.randint({0}, {1})', (h) => ({ k: 'random', from: h[0], to: h[1] })],
   ],
   java: [
     ['Math.pow(10, {0})', math('pow10')],
+    ['(int) Math.pow({0}, {1})', bin('POW')],
     ['Math.pow({0}, {1})', bin('POW')],
+    ['Math.floorDiv({0}, {1})', idiv('IDIV', false)],
+    ['Math.floorMod({0}, {1})', idiv('MOD', false)],
+    ['(int) Math.floor({0} / {1})', idiv('IDIV', false)],
+    ['(int) ({0} / {1})', idiv('IDIV', true)],
+    ['(({0} % {1}) + {1}) % {1}', idiv('MOD', false)],
     ['Math.sqrt({0})', math('sqrt')],
     ['Math.abs({0})', math('abs')],
     ['Math.log({0})', math('ln')],
@@ -94,7 +105,12 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
   ],
   csharp: [
     ['Math.Pow(10, {0})', math('pow10')],
+    ['(int) Math.Pow({0}, {1})', bin('POW')],
     ['Math.Pow({0}, {1})', bin('POW')],
+    ['(int) Math.Floor((double) {0} / {1})', idiv('IDIV', false)],
+    ['(int) Math.Floor({0} / {1})', idiv('IDIV', false)],
+    ['(int) ({0} / {1})', idiv('IDIV', true)],
+    ['(({0} % {1}) + {1}) % {1}', idiv('MOD', false)],
     ['Math.Sqrt({0})', math('sqrt')],
     ['Math.Abs({0})', math('abs')],
     ['Math.Log({0})', math('ln')],
@@ -121,7 +137,13 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
   ],
   cpp: [
     ['pow(10, {0})', math('pow10')],
+    ['(int) pow({0}, {1})', bin('POW')],
     ['pow({0}, {1})', bin('POW')],
+    ['(int) floor((double) {0} / {1})', idiv('IDIV', false)],
+    ['(int) floor({0} / {1})', idiv('IDIV', false)],
+    ['(int) ({0} / {1})', idiv('IDIV', true)],
+    ['(({0} % {1}) + {1}) % {1}', idiv('MOD', false)],
+    ['fmod(fmod({0}, {1}) + {1}, {1})', idiv('MOD', false)],
     ['sqrt({0})', math('sqrt')],
     ['abs({0})', math('abs')],
     ['fabs({0})', math('abs')],
@@ -134,7 +156,7 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['ceil({0})', math('ceil')],
     ['(int) floor({0})', math('floor')],
     ['floor({0})', math('floor')],
-    ['fmod({0}, {1})', bin('MOD')],
+    ['fmod({0}, {1})', idiv('MOD', true)],
     ['(int) {0}.length()', len('text')],
     ['{0}.length()', len('text')],
     ['(int) {0}.size()', len('auto')],
@@ -145,6 +167,7 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['stod({0})', conv('float')],
     ['stof({0})', conv('float')],
     ['to_string({0})', conv('text')],
+    ['toText({0})', conv('text')],
     ['input({0})', ask('text')],
     ['rand() % {0} + {1}', rnd],
     ['rand() % {0}', (h) => rnd([h[0], n(0)])],
@@ -160,8 +183,9 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['Math.exp({0})', math('exp')],
     ['Math.round({0})', math('round')],
     ['Math.ceil({0})', math('ceil')],
-    ['Math.trunc({0} / {1})', bin('IDIV')],
-    ['Math.floor({0} / {1})', bin('IDIV')],
+    ['Math.trunc({0} / {1})', idiv('IDIV', true)],
+    ['Math.floor({0} / {1})', idiv('IDIV', false)],
+    ['(({0} % {1}) + {1}) % {1}', idiv('MOD', false)],
     ['Math.floor(Math.random() * {0}) + {1}', rnd],
     ['Math.floor(Math.random() * {0})', (h) => rnd([h[0], n(0)])],
     ['Math.floor({0})', math('floor')],
@@ -191,6 +215,8 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['Int(Rnd * {0}) + {1}', rnd],
     ['Int(({0} - {1} + 1) * Rnd + {1})', (h) => ({ k: 'random', from: h[1], to: h[0] })],
     ['Int(Rnd() * {0})', (h) => rnd([h[0], n(0)])],
+    ['Int({0} / {1})', idiv('IDIV', false)],
+    ['(({0} Mod {1}) + {1}) Mod {1}', idiv('MOD', false)],
     ['Int({0})', math('floor')],
     ['Fix({0})', conv('int')],
     ['CLng(InputBox({0}))', ask('int')],
@@ -586,7 +612,7 @@ function mapProgram(p: Program, fn: (e: Expr, place: string) => Expr): Program {
 
 function simplify(e: Expr): Expr {
   if (e.k === 'convert' && e.to === 'int' && e.a?.k === 'math' && ['round', 'ceil', 'floor'].includes(e.a.fn)) return e.a;
-  if (e.k === 'convert' && e.to === 'int' && e.a?.k === 'bin' && e.a.op === 'DIV') return { ...e.a, op: 'IDIV' };
+  if (e.k === 'convert' && e.to === 'int' && e.a?.k === 'bin' && e.a.op === 'DIV') return { ...e.a, op: 'IDIV', trunc: true };
   if (e.k === 'convert' && e.to !== 'text' && e.a?.k === 'ask' && e.a.as === 'text') return { ...e.a, as: e.to };
   if (e.k === 'math' && e.fn === 'neg' && e.a?.k === 'num') return { ...e.a, v: -e.a.v };
   return e;
@@ -617,6 +643,7 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
   const nz = new Normalizer(program, lang);
   let p: Program = {
     ...program,
+    meta: { ...program.meta, sourceLang: lang },
     main: program.main ? nz.stmts(program.main) : null,
     functions: program.functions.map((f) => ({ ...f, body: nz.stmts(f.body) })),
   };
@@ -636,7 +663,7 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
             flattenJoin(e, isStr, parts);
             return { k: 'join', parts: mergeStr(parts) };
           }
-          if (e.op === 'DIV' && typed && round === 0 && !hasCast(e.a) && !hasCast(e.b) && t(e.a) === 'int' && t(e.b) === 'int') return { ...e, op: 'IDIV' };
+          if (e.op === 'DIV' && typed && round === 0 && !hasCast(e.a) && !hasCast(e.b) && t(e.a) === 'int' && t(e.b) === 'int') return { ...e, op: 'IDIV', trunc: true };
           if (e.op === 'MUL' && isStr(e.a) && !isStr(e.b)) return { k: 'lib', lib: 'text', fn: 'repeat', args: [e.a, e.b] };
           return e;
         case 'join': {
@@ -660,6 +687,13 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
     });
   }
   p = mapProgram(p, stripDivCasts);
+  // Every language except Python rounds integer division and remainder toward zero.
+  p = mapProgram(p, (e) => {
+    if (e.k !== 'bin' || (e.op !== 'IDIV' && e.op !== 'MOD')) return e;
+    const trunc = e.trunc ?? lang !== 'python';
+    const { trunc: _old, ...rest } = e;
+    return trunc ? { ...rest, trunc: true } : rest;
+  });
   return { program: p, diagnostics: [...diagnostics, ...nz.diagnostics] };
 }
 

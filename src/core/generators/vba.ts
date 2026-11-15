@@ -78,7 +78,7 @@ export class VbaGen extends BaseGen {
       const params = f.params.map((p, i) => (isList(types[i]) || types[i] === 'any' ? `${this.id(p)} As Variant` : `ByVal ${this.id(p)} As ${this.typeName(types[i])}`)).join(', ');
       if (f.returns) this.emit(`Function ${this.id(f.name)}(${params}) As ${this.typeName(this.a.returnType(f.name))}`);
       else this.emit(`Sub ${this.id(f.name)}(${params})`);
-    } else this.emit(`Sub ${this.program.meta?.mainName ?? 'Main'}()`);
+    } else this.emit(`Sub ${(this.program.meta?.sourceLang === 'vba' && this.program.meta.mainName) || 'Main'}()`);
     this.indented(() => {
       for (const line of this.dims(place)) this.emit(line);
       if (!f && this.usesRandom) this.emit('Randomize');
@@ -108,7 +108,7 @@ export class VbaGen extends BaseGen {
           this.emit('Debug.Print');
           break;
         }
-        this.emit(`Debug.Print ${this.sub(s.value, 0, { k: 'str', v: '' })}${s.newline ? '' : ';'}`);
+        this.emit(`Debug.Print ${this.sub(this.listsAsText(s.value), 0, { k: 'str', v: '' })}${s.newline ? '' : ';'}`);
         break;
       case 'set':
         this.emit(`${this.id(s.name)} = ${this.sub(s.value, 0, { k: 'num', v: 0 })}`);
@@ -249,6 +249,13 @@ export class VbaGen extends BaseGen {
       case 'bin': {
         if (e.op === 'ADD' && (this.isStringy(e.a) || this.isStringy(e.b))) {
           return [`${this.concatPart(e.a, true)} & ${this.concatPart(e.b, false)}`, V.concat];
+        }
+        if ((e.op === 'IDIV' || e.op === 'MOD') && !this.nativeDivOk(e, true)) {
+          // round down (as in Python)
+          if (e.op === 'IDIV') return [`Int(${this.sub(e.a, V.mul)} / ${this.sub(e.b, V.mul + 1)})`, ATOM];
+          const x = this.sub(e.a, V.mod);
+          const y = this.sub(e.b, V.mod + 1);
+          return [`((${x} Mod ${y}) + ${y}) Mod ${y}`, V.mod];
         }
         const [op, prec] = BIN[e.op];
         if (e.op === 'POW') return [`${this.sub(e.a, prec + 1)} ^ ${this.sub(e.b, prec + 1)}`, prec];

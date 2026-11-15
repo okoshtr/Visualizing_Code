@@ -22,9 +22,9 @@ export class CppGen extends CLikeGen {
   }
 
   protected printCode(value: Ex, newline: boolean): string {
-    const parts = value?.k === 'join' ? value.parts : [value];
+    const v = this.listsAsText(value);
+    const parts = v?.k === 'join' ? v.parts : [v];
     const items = parts.map((p) => (this.typeOf(p) === 'bool' ? `(${this.sub(p, C.cond + 1)} ? "true" : "false")` : this.sub(p, C.add, { k: 'str', v: '' })));
-    for (const p of parts) if (isList(this.typeOf(p))) this.warn('C++ kann Listen nicht direkt ausgeben - nutze eine Schleife.');
     return `cout << ${items.join(' << ')}${newline ? ' << endl' : ''}`;
   }
 
@@ -62,7 +62,13 @@ export class CppGen extends CLikeGen {
 
   protected convertCode(e: Expr & { k: 'convert' }): Code {
     const t = this.typeOf(e.a);
-    if (e.to === 'text') return t === 'string' ? this.expr(e.a!) : [`to_string(${this.sub(e.a)})`, ATOM];
+    if (e.to === 'text') {
+      if (t === 'string') return this.expr(e.a!);
+      if (t === 'int') return [`to_string(${this.sub(e.a)})`, ATOM];
+      if (isList(t)) return this.joinCode([e.a]);
+      this.useHelper('toText');
+      return [`toText(${this.sub(e.a)})`, ATOM];
+    }
     if (e.to === 'int') {
       if (t === 'int') return this.expr(e.a!);
       if (t === 'double') return [`(int) ${this.sub(e.a, C.unary)}`, C.unary];
@@ -105,21 +111,33 @@ export class CppGen extends CLikeGen {
       return this.sub(p, first ? C.add : C.add + 1, { k: 'str', v: '' });
     }
     if (t === 'bool') return `string(${this.sub(p, C.cond + 1)} ? "true" : "false")`;
-    return `to_string(${this.sub(p)})`;
+    if (t === 'int') return `to_string(${this.sub(p)})`;
+    // doubles: same format as "cout <<" (to_string would print 3.500000)
+    this.useHelper('toText');
+    return `toText(${this.sub(p)})`;
   }
 
-  protected joinCode(parts: Ex[]): Code {
+  protected joinCode(parts0: Ex[]): Code {
+    const j = this.listsAsText({ k: 'join', parts: parts0 }) as Expr & { k: 'join' };
+    const parts = j.parts;
     if (!parts.length) return ['string("")', ATOM];
     if (parts.length === 1) return [this.asString(parts[0], true), this.isStringy(parts[0]) ? this.expr(parts[0]!)[1] : ATOM];
     return [parts.map((p, i) => this.asString(p, i === 0)).join(' + '), C.add];
   }
 
-  protected modCode(a: Ex, b: Ex): Code {
+  protected floorFn(): string {
+    this.imports.add('<cmath>');
+    return 'floor';
+  }
+
+  protected modCode(e: Expr & { k: 'bin' }): Code {
+    const { a, b } = e;
     if (!this.bothInt(a, b)) {
       this.imports.add('<cmath>');
-      return [`fmod(${this.sub(a)}, ${this.sub(b)})`, ATOM];
+      if (this.nativeDivOk(e, true)) return [`fmod(${this.sub(a)}, ${this.sub(b)})`, ATOM];
+      return [`fmod(fmod(${this.sub(a)}, ${this.sub(b)}) + ${this.sub(b, C.add + 1)}, ${this.sub(b)})`, ATOM];
     }
-    return super.modCode(a, b);
+    return super.modCode(e);
   }
 
   protected powCode(a: Ex, b: Ex): Code {

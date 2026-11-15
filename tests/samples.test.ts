@@ -9,7 +9,7 @@ const dir = join(__dirname, 'samples');
 
 const EXPECTED: Record<string, string> = {
   'sample.py': 'Zahlen: [2, 4, 8, 10]\nSumme ist = 24\nHallo Ada, willkommen!\n49\nHALLO WELT 10\nHallo tleW ollaH\ngefunden\nEnde bei -2\n4 3 3.5 1024\nTrue\n',
-  'Main.java': '1: ADA\n2: LINUS\n0 1 2 \n3\n3.5\n42\nerster: Ada\nk=-2 d=7\n',
+  'Main.java': '1: ADA\n2: LINUS\n0 1 2 \n3\n3.5\n42\nerster: Ada\nk=-2 d=7.0\n',
   'main.cpp': 'Summe: 43\n16 15 8 4 \nHallo Welt!\n5! = 120\n',
   'Program.cs': '3 ist ungerade\n6 ist gerade\n9 ist ungerade\n12 ist gerade\nAnzahl: 4\nBLÖCKE 6\n',
   'app.js': 'Fibonacci: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34\nDie 10. Zahl ist 55\nKATZE\nRest 2\n9 3\n',

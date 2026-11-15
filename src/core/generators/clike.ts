@@ -330,13 +330,32 @@ export abstract class CLikeGen extends BaseGen {
     return [`${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)}`, C.mul];
   }
 
-  protected idivCode(a: Ex, b: Ex): Code {
-    if (this.bothInt(a, b)) return [`${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)}`, C.mul];
-    return [`(int) (${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)})`, C.unary];
+  /** Integer division. The block rounds down; e.trunc means "toward zero" (C-style). */
+  protected idivCode(e: Expr & { k: 'bin' }): Code {
+    const { a, b } = e;
+    if (this.bothInt(a, b)) {
+      if (this.nativeDivOk(e, true)) return [`${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)}`, C.mul];
+      return this.floorDivInts(a, b);
+    }
+    if (e.trunc) return [`(int) (${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)})`, C.unary];
+    return [`(int) ${this.floorFn()}(${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)})`, C.unary];
   }
 
-  protected modCode(a: Ex, b: Ex): Code {
-    return [`${this.sub(a, C.mul)} % ${this.sub(b, C.mul + 1)}`, C.mul];
+  protected modCode(e: Expr & { k: 'bin' }): Code {
+    const { a, b } = e;
+    if (this.nativeDivOk(e, true)) return [`${this.sub(a, C.mul)} % ${this.sub(b, C.mul + 1)}`, C.mul];
+    const x = this.sub(a, C.mul);
+    const y = this.sub(b, C.mul + 1);
+    return [`((${x} % ${y}) + ${y}) % ${y}`, C.mul];
+  }
+
+  /** Name of the "round down" function (Math.Floor, floor, ...). */
+  protected floorFn(): string {
+    return 'Math.Floor';
+  }
+
+  protected floorDivInts(a: Ex, b: Ex): Code {
+    return [`(int) ${this.floorFn()}((double) ${this.sub(a, C.unary)} / ${this.sub(b, C.mul + 1)})`, C.unary];
   }
 
   protected abstract powCode(a: Ex, b: Ex): Code;
@@ -367,10 +386,14 @@ export abstract class CLikeGen extends BaseGen {
           case 'DIV':
             return this.divCode(e.a, e.b);
           case 'IDIV':
-            return this.idivCode(e.a, e.b);
+            return this.idivCode(e);
           case 'MOD':
-            return this.modCode(e.a, e.b);
+            return this.modCode(e);
           case 'POW':
+            if (this.typeOf(e) === 'int' && this.lang !== 'javascript') {
+              const [code] = this.powCode(e.a, e.b);
+              return [`(int) ${code}`, C.unary];
+            }
             return this.powCode(e.a, e.b);
           case 'EQ':
           case 'NEQ':

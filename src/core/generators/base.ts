@@ -1,5 +1,6 @@
-import { type Analysis, MAIN, type Ty, isNumeric } from '../analysis';
+import { type Analysis, MAIN, type Ty, isList, isNumeric } from '../analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from '../ir';
+import { walkStmts } from '../ir';
 import { HELPERS, externalModule, findLibFn, implFor, isExternalLib } from '../library';
 import { freshName, ident } from '../names';
 
@@ -120,6 +121,89 @@ export abstract class BaseGen {
     return isNumeric(this.typeOf(e));
   }
 
+  /** "[" + join(list, ", ") + "]" for languages that cannot print lists directly. */
+  protected listText(e: Ex): Expr {
+    return { k: 'join', parts: [{ k: 'str', v: '[' }, { k: 'lib', lib: 'text', fn: 'joinList', args: [e, { k: 'str', v: ', ' }] }, { k: 'str', v: ']' }] };
+  }
+
+  /** Replaces list-typed parts of a printed / joined value by their text form. */
+  protected listsAsText(e: Ex): Ex {
+    if (!e) return e;
+    if (isList(this.typeOf(e))) return this.listText(e);
+    if (e.k === 'join') return { ...e, parts: e.parts.flatMap((p) => (isList(this.typeOf(p)) ? (this.listText(p) as any).parts : [p])) };
+    return e;
+  }
+
+  // ---- integer division / remainder ------------------------------------------------
+
+  private zeroCompared = new WeakSet<object>();
+  private nonNegVars: Set<string> | null = null;
+
+  /**
+   * Can the language's own operator be used for IDIV/MOD? nativeTrunc: the operator rounds toward zero.
+   * The kinds only differ for negative numbers, so the native operator is fine when that cannot happen.
+   */
+  protected nativeDivOk(e: Expr & { k: 'bin' }, nativeTrunc: boolean): boolean {
+    if (!!e.trunc === nativeTrunc) return true;
+    if (e.op === 'MOD' && this.zeroCompared.has(e)) return true;
+    return e.b?.k === 'num' && e.b.v > 0 && this.isNonNegative(e.a);
+  }
+
+  protected isNonNegative(e: Ex): boolean {
+    if (!e) return false;
+    switch (e.k) {
+      case 'num':
+        return e.v >= 0;
+      case 'len':
+        return true;
+      case 'var':
+        return this.nonNegativeVars().has(e.name);
+      case 'math':
+        return e.fn === 'abs' || ((e.fn === 'round' || e.fn === 'floor' || e.fn === 'ceil' || e.fn === 'sqrt') && this.isNonNegative(e.a));
+      case 'random':
+        return this.isNonNegative(e.from);
+      case 'bin':
+        if (e.op === 'ADD' || e.op === 'MUL') return this.isNonNegative(e.a) && this.isNonNegative(e.b);
+        if (e.op === 'IDIV' || e.op === 'MOD' || e.op === 'DIV') return this.isNonNegative(e.a) && e.b?.k === 'num' && e.b.v > 0;
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  /** Variables that are only ever assigned values >= 0 (simple fixed-point analysis). */
+  private nonNegativeVars(): Set<string> {
+    if (this.nonNegVars) return this.nonNegVars;
+    const all: Stmt[] = [...(this.program.main ?? []), ...this.program.functions.flatMap((f) => f.body)];
+    const set = new Set<string>();
+    walkStmts(all, (s) => {
+      if (s.k === 'set' || s.k === 'change') set.add(s.name);
+      if (s.k === 'for') set.add(s.var);
+    });
+    for (const f of this.program.functions) for (const p of f.params) set.delete(p);
+    this.nonNegVars = set;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      walkStmts(all, (s) => {
+        let bad: string | null = null;
+        if (s.k === 'set' && set.has(s.name) && !this.isNonNegative(s.value)) bad = s.name;
+        if (s.k === 'change' && set.has(s.name) && !this.isNonNegative(s.by)) bad = s.name;
+        if (s.k === 'for' && set.has(s.var)) {
+          const step = s.by?.k === 'num' ? s.by.v : null;
+          const ok = this.isNonNegative(s.from) && step !== null && (step > 0 || this.isNonNegative(s.to));
+          if (!ok) bad = s.var;
+        }
+        if (s.k === 'foreach') set.delete(s.var);
+        if (bad) {
+          set.delete(bad);
+          changed = true;
+        }
+      });
+    }
+    return set;
+  }
+
   // ---- expressions ------------------------------------------------------------
 
   protected abstract expr(e: Expr): Code;
@@ -129,6 +213,11 @@ export abstract class BaseGen {
     if (!e) {
       if (!placeholder) return this.missing();
       e = placeholder;
+    }
+    if (e.k === 'bin' && (e.op === 'EQ' || e.op === 'NEQ')) {
+      // "x % n == 0" means the same with both kinds of remainder
+      if (e.a?.k === 'bin' && e.a.op === 'MOD' && e.b?.k === 'num' && e.b.v === 0) this.zeroCompared.add(e.a);
+      if (e.b?.k === 'bin' && e.b.op === 'MOD' && e.a?.k === 'num' && e.a.v === 0) this.zeroCompared.add(e.b);
     }
     const [code, prec] = this.expr(e);
     return prec < minPrec ? `(${code})` : code;

@@ -88,6 +88,20 @@ function assignedIn(stmts: Stmt[]): Set<string> {
   return names;
 }
 
+/** Is the first use of `name` in this body an assignment (that does not read the variable)? */
+export function writtenBeforeRead(body: Stmt[], name: string): boolean {
+  let result: boolean | null = null;
+  walkStmts(body, (s) => {
+    if (result !== null) return;
+    let reads = false;
+    for (const e of stmtExprs(s)) walkExpr(e, (x) => x.k === 'var' && x.name === name && (reads = true));
+    if (reads) result = false;
+    else if ((s.k === 'set' && s.name === name) || ((s.k === 'for' || s.k === 'foreach') && s.var === name)) result = true;
+    else if (s.k === 'change' && s.name === name) result = false;
+  });
+  return result === true;
+}
+
 function computeLoopOnly(body: Stmt[]): Set<string> {
   const loopVars = new Set<string>();
   const other = new Set<string>();
@@ -125,13 +139,22 @@ export function analyze(program: Program): Analysis {
 
   // --- scopes ---------------------------------------------------------------
   const usedIn = new Map<string, Set<string>>(); // var -> places (excluding params / explicit locals)
-  const explicitLocal = (place: string, name: string) => !!meta.locals?.[place]?.includes(name);
+  const shapeLocal = new Set<string>(); // "place:name" local because of how it is used
+  const explicitLocal = (place: string, name: string) => !!meta.locals?.[place]?.includes(name) || shapeLocal.has(`${place}:${name}`);
   for (const p of placeList) {
     for (const n of namesIn(p.body)) {
       if (p.params.includes(n) || explicitLocal(p.name, n)) continue;
       if (!usedIn.has(n)) usedIn.set(n, new Set());
       usedIn.get(n)!.add(p.name);
     }
+  }
+  // A variable that only appears inside functions and is always written there before it is
+  // read (e.g. a loop counter or a temporary result) is local to each of these functions.
+  for (const [n, used] of [...usedIn]) {
+    if (used.size < 2 || used.has(MAIN)) continue;
+    if (![...used].every((pl) => writtenBeforeRead(placeList.find((x) => x.name === pl)!.body, n))) continue;
+    for (const pl of used) shapeLocal.add(`${pl}:${n}`);
+    usedIn.delete(n);
   }
   const globals = new Set<string>();
   for (const [n, places] of usedIn) if (places.size > 1) globals.add(n);
@@ -221,8 +244,10 @@ export function analyze(program: Program): Analysis {
             return t === '?' ? 'int' : isNumeric(t) ? t : 'double';
           }
           case 'DIV':
-          case 'POW':
             return 'double';
+          case 'POW':
+            // int ** non-negative int stays an integer (Python); the other languages cast
+            return a === 'int' && b === 'int' && e.b?.k === 'num' && e.b.v >= 0 ? 'int' : 'double';
           case 'IDIV':
             return 'int';
           default:

@@ -750,6 +750,15 @@ export const HELPERS: Partial<Record<Lang, Record<string, { code: string; import
     return parts;
 }`,
     },
+    toText: {
+      imports: ['<sstream>'],
+      code: `template <typename T>
+string toText(const T& value) {
+    ostringstream out;
+    out << value;
+    return out.str();
+}`,
+    },
     joinList: {
       imports: ['<sstream>'],
       code: `template <typename T>

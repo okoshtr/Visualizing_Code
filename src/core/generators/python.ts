@@ -179,6 +179,13 @@ export class PythonGen extends BaseGen {
         if (e.op === 'ADD' && (this.isStringy(e.a) || this.isStringy(e.b))) {
           return [`${this.str(e.a, P.add)} + ${this.str(e.b)}`, P.add];
         }
+        if ((e.op === 'IDIV' || e.op === 'MOD') && !this.nativeDivOk(e, false)) {
+          // round toward zero (as in Java, C#, C++, JavaScript, VBA)
+          if (e.op === 'IDIV') return [`int(${this.sub(e.a, P.mul)} / ${this.sub(e.b, P.mul + 1)})`, ATOM];
+          this.imports.add('math');
+          const call = `math.fmod(${this.sub(e.a)}, ${this.sub(e.b)})`;
+          return [this.bothInt(e.a, e.b) ? `int(${call})` : call, ATOM];
+        }
         const [op, prec] = BIN[e.op];
         const cmp = prec === P.cmp;
         return [`${this.sub(e.a, cmp ? prec + 1 : prec)} ${op} ${this.sub(e.b, prec + 1)}`, prec];

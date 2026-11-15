@@ -114,8 +114,9 @@ export class JavaScriptGen extends CLikeGen {
     return [`${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)}`, C.mul];
   }
 
-  protected idivCode(a: Ex, b: Ex): Code {
-    return [`Math.trunc(${this.sub(a, C.mul)} / ${this.sub(b, C.mul + 1)})`, ATOM];
+  protected idivCode(e: Expr & { k: 'bin' }): Code {
+    const fn = e.trunc ? 'Math.trunc' : 'Math.floor';
+    return [`${fn}(${this.sub(e.a, C.mul)} / ${this.sub(e.b, C.mul + 1)})`, ATOM];
   }
 
   protected powCode(a: Ex, b: Ex): Code {

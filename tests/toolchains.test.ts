@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EXAMPLES, generate, type Lang } from '../src/core';
+import { EXAMPLES, generate, parse, type Lang, type Program } from '../src/core';
 import { runToText } from './helpers';
 
 const has = (cmd: string, args: string[] = ['--version']) => spawnSync(cmd, args, { stdio: 'ignore' }).status === 0;
@@ -22,6 +22,14 @@ const RUNNERS: Partial<Record<Lang, { available: boolean; run: (code: string, in
       return exec('java', ['-Dstdout.encoding=UTF-8', '-cp', dir, 'Main'], input);
     },
   },
+  csharp: {
+    available: has('dotnet'),
+    run: (code, input) => {
+      const dir = csharpProject();
+      writeFileSync(join(dir, 'Program.cs'), code);
+      return exec('dotnet', ['run', '--project', dir], input, { DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1' });
+    },
+  },
   cpp: {
     available: has('g++'),
     run: (code, input) => {
@@ -33,16 +41,61 @@ const RUNNERS: Partial<Record<Lang, { available: boolean; run: (code: string, in
   },
 };
 
-function exec(cmd: string, args: string[], input: string): string {
-  const r = spawnSync(cmd, args, { input, encoding: 'utf8', env: { ...process.env, JAVA_TOOL_OPTIONS: '' } });
+let csDir: string | null = null;
+function csharpProject(): string {
+  if (csDir) return csDir;
+  csDir = mkdtempSync(join(tmpdir(), 'vc-cs-'));
+  writeFileSync(
+    join(csDir, 'run.csproj'),
+    '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings></PropertyGroup></Project>',
+  );
+  return csDir;
+}
+
+function exec(cmd: string, args: string[], input: string, env: Record<string, string> = {}): string {
+  const r = spawnSync(cmd, args, { input, encoding: 'utf8', env: { ...process.env, JAVA_TOOL_OPTIONS: '', ...env } });
   if (r.status !== 0) throw new Error(`${cmd} failed: ${r.stderr}`);
   return r.stdout;
 }
 
 const normalize = (s: string) => s.replace(/\r/g, '').trimEnd();
 
+const n = (v: number, float = false) => ({ k: 'num', v, ...(float ? { float } : {}) }) as const;
+const pr = (value: any) => ({ k: 'print', value, newline: true }) as const;
+const bin = (op: any, a: any, b: any, trunc?: boolean): any => ({ k: 'bin', op, a, b, ...(trunc ? { trunc } : {}) });
+
+/** Programs that check number formats, rounding and integer division in every language. */
+const NUMBER_PROGRAMS: { id: string; program: Program }[] = [
+  {
+    id: 'zahlen',
+    program: {
+      functions: [],
+      main: [
+        { k: 'set', name: 'a', value: n(-7) },
+        { k: 'set', name: 'b', value: n(2) },
+        pr(bin('IDIV', { k: 'var', name: 'a' }, { k: 'var', name: 'b' })),
+        pr(bin('MOD', { k: 'var', name: 'a' }, { k: 'var', name: 'b' })),
+        pr(bin('IDIV', { k: 'var', name: 'a' }, { k: 'var', name: 'b' }, true)),
+        pr(bin('MOD', { k: 'var', name: 'a' }, { k: 'var', name: 'b' }, true)),
+        pr(bin('DIV', n(7), n(2))),
+        { k: 'set', name: 'x', value: bin('DIV', n(6), n(2)) },
+        pr({ k: 'var', name: 'x' }),
+        pr({ k: 'join', parts: [{ k: 'str', v: 'x = ' }, { k: 'var', name: 'x' }] }),
+        pr(bin('ADD', n(0.1, true), n(0.2, true))),
+        pr(bin('DIV', n(1), n(3))),
+        pr(bin('POW', n(2), n(10))),
+        pr({ k: 'math', fn: 'round', a: n(3.7, true) }),
+        pr({ k: 'list', items: [n(1), n(2), n(3)] }),
+        pr({ k: 'join', parts: [{ k: 'str', v: 'Liste: ' }, { k: 'list', items: [n(1.5, true), n(2, true)] }] }),
+        pr(bin('MOD', n(10), n(3))),
+        pr({ k: 'bool', v: true }),
+      ],
+    },
+  },
+];
+
 describe('generated code runs with the real toolchain', () => {
-  for (const ex of EXAMPLES.filter((e) => e.id !== 'zahlenraten')) {
+  for (const ex of [...EXAMPLES.filter((e) => e.id !== 'zahlenraten'), ...NUMBER_PROGRAMS.map((p) => ({ ...p, input: [] as string[] }))]) {
     for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
       it.skipIf(!runner.available)(`${ex.id} / ${lang}`, async () => {
         const input = (ex.input ?? []).join('\n') + '\n';
@@ -51,5 +104,24 @@ describe('generated code runs with the real toolchain', () => {
         expect(normalize(actual)).toBe(normalize(expected));
       });
     }
+  }
+});
+
+describe('code from one language keeps its meaning in the others', () => {
+  // Java rounds integer division toward zero; translated code must do the same.
+  const java = `public class Main {
+    public static void main(String[] args) {
+        int a = -7;
+        System.out.println(a / 2);
+        System.out.println(a % 2);
+        System.out.println(17 / 5 + " " + 17 % 5);
+    }
+}
+`;
+  const program = parse(java, 'java').program;
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(`Java -> ${lang}`, () => {
+      expect(normalize(runner.run(generate(program, lang).code, ''))).toBe('-3\n-1\n3 2');
+    });
   }
 });

@@ -13,6 +13,8 @@ export interface BlockState {
   inputs?: Record<string, { block?: BlockState; shadow?: BlockState }>;
   next?: { block?: BlockState };
   extraState?: any;
+  /** Extra information that has no field (JSON): trunc, gap, ... */
+  data?: string;
   icons?: { comment?: { text: string; pinned?: boolean; height?: number; width?: number } };
   collapsed?: boolean;
   enabled?: boolean;
@@ -92,7 +94,14 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
       case 'var':
         return { type: 'variables_get', id, fields: { VAR: varField(e.name) } };
       case 'bin':
-        if (ARITH[e.op]) return { type: 'op_arith', id, fields: { OP: e.op }, inputs: inputs([['A', e.a, numShadow(0)], ['B', e.b, numShadow(0)]]) };
+        if (ARITH[e.op])
+          return {
+            type: 'op_arith',
+            id,
+            fields: { OP: e.op },
+            inputs: inputs([['A', e.a, numShadow(0)], ['B', e.b, numShadow(0)]]),
+            ...(e.trunc && (e.op === 'IDIV' || e.op === 'MOD') ? { data: JSON.stringify({ trunc: true }) } : {}),
+          };
         if (COMPARE.has(e.op)) return { type: 'op_compare', id, fields: { OP: e.op }, inputs: inputs([['A', e.a], ['B', e.b]]) };
         return { type: 'op_logic', id, fields: { OP: e.op }, inputs: inputs([['A', e.a], ['B', e.b]]) };
       case 'not':
@@ -265,6 +274,15 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
   };
 }
 
+export function readData(b: BlockState): Record<string, any> {
+  if (!b.data) return {};
+  try {
+    return JSON.parse(b.data);
+  } catch {
+    return {};
+  }
+}
+
 function estimateHeight(stmts: Stmt[]): number {
   let h = 0;
   for (const s of stmts) {
@@ -322,8 +340,11 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return withId({ k: 'bool', v: field(b, 'BOOL') === 'TRUE' });
       case 'variables_get':
         return withId({ k: 'var', name: varName(field(b, 'VAR')) });
-      case 'op_arith':
-        return withId({ k: 'bin', op: field(b, 'OP') ?? 'ADD', a: e(inp(b, 'A')), b: e(inp(b, 'B')) });
+      case 'op_arith': {
+        const op = field(b, 'OP') ?? 'ADD';
+        const trunc = (op === 'IDIV' || op === 'MOD') && readData(b).trunc === true;
+        return withId({ k: 'bin', op, a: e(inp(b, 'A')), b: e(inp(b, 'B')), ...(trunc ? { trunc } : {}) });
+      }
       case 'op_compare':
         return withId({ k: 'bin', op: field(b, 'OP') ?? 'EQ', a: e(inp(b, 'A')), b: e(inp(b, 'B')) });
       case 'op_logic':

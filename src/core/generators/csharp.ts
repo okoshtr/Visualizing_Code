@@ -14,7 +14,7 @@ export class CSharpGen extends CLikeGen {
   }
 
   protected printCode(value: Ex, newline: boolean): string {
-    return `Console.${newline ? 'WriteLine' : 'Write'}(${this.sub(value, 0, { k: 'str', v: '' })})`;
+    return `Console.${newline ? 'WriteLine' : 'Write'}(${this.sub(this.listsAsText(value), 0, { k: 'str', v: '' })})`;
   }
 
   protected emptyLine(): string {
@@ -85,7 +85,8 @@ export class CSharpGen extends CLikeGen {
     return [`random.Next(${this.sub(from, 0, { k: 'num', v: 1 })}, ${this.sub(foldPlus(to ?? { k: 'num', v: 10 }, 1), 0)})`, ATOM];
   }
 
-  protected joinCode(parts: Ex[]): Code {
+  protected joinCode(parts0: Ex[]): Code {
+    const parts = (this.listsAsText({ k: 'join', parts: parts0 }) as Expr & { k: 'join' }).parts;
     if (!parts.length) return ['""', ATOM];
     if (parts.length === 1) return this.isStringy(parts[0]) ? this.expr(parts[0]!) : [`${this.sub(parts[0], ATOM)}.ToString()`, ATOM];
     const codes = parts.map((p, i) => this.sub(p, i === 0 ? C.add : C.add + 1, { k: 'str', v: '' }));
@@ -105,7 +106,17 @@ export class CSharpGen extends CLikeGen {
     this.depth = 1;
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, 'static ')));
     this.place = MAIN;
-    const main = this.capture(() => this.open('static void Main()', () => this.functionBody(this.a.place(MAIN))));
+    const main = this.capture(() =>
+      this.open('static void Main()', () => {
+        const body = this.capture(() => this.functionBody(this.a.place(MAIN)));
+        // decimal point instead of the comma of the system language (also for double.Parse)
+        if (/\bdouble\b|\d\.\d/.test([...body, ...fns.flat()].join('\n'))) {
+          this.emit('CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;');
+          this.imports.add('System.Globalization');
+        }
+        this.lines.push(...body);
+      }),
+    );
     const fields = this.capture(() => {
       if (this.usesRandom) this.emit('static Random random = new Random();');
       for (const g of [...this.a.globals].sort()) {
@@ -136,7 +147,8 @@ export class CSharpGen extends CLikeGen {
     for (const imp of this.imports) usings.add(imp);
     for (const imp of this.program.meta?.imports ?? []) if (imp.lang === 'csharp') usings.add(imp.module);
     const out = [...[...usings].sort().map((u) => `using ${u};`), ''];
-    const className = this.opts.className ?? this.program.meta?.className ?? 'Program';
+    const meta = this.program.meta;
+    const className = this.opts.className ?? (meta?.sourceLang === 'csharp' ? meta.className : undefined) ?? 'Program';
     out.push(`class ${className}`, '{', ...inner, '}');
     return this.result(out.join('\n'));
   }
