@@ -11,7 +11,7 @@ const media = join(root, 'node_modules/blockly/media');
 const common = { bundle: true, minify: !watch, sourcemap: watch ? 'inline' : false, target: 'es2020', logLevel: 'warning', legalComments: 'none' };
 
 function html(styles, scripts) {
-  return readFileSync(join(root, 'src/web/index.html'), 'utf8').replace('<!--STYLES-->', styles).replace('<!--SCRIPTS-->', scripts);
+  return readFileSync(join(root, 'src/web/index.html'), 'utf8').replace('<!--STYLES-->', () => styles).replace('<!--SCRIPTS-->', () => scripts);
 }
 
 async function buildWeb() {
