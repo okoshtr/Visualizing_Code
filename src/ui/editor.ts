@@ -502,7 +502,7 @@ export class BlockEditor {
   /** Places top blocks without a saved position below the others, using their real size. */
   private arrange(layout: Layout) {
     const tops = this.ws.getTopBlocks(false);
-    const key = (b: Blockly.BlockSvg) => (b.type === 'event_start' ? 'main' : b.type.startsWith('procedures_def') ? `fn:${b.getFieldValue('NAME')}` : '');
+    const key = (b: Blockly.BlockSvg) => (b.type === 'event_start' ? 'main' : b.type.startsWith('procedures_def') ? `fn:${b.getFieldValue('NAME')}` : b.type === 'class_def' ? `cls:${b.getFieldValue('NAME')}` : '');
     let bottom = 20;
     for (const b of tops) {
       const k = key(b);

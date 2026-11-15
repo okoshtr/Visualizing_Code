@@ -1,9 +1,9 @@
 // VBA source -> IR
 
-import type { Ex, Expr, FunctionDef, Program, Stmt, TypeName } from '../ir';
-import { walkStmts } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef, Program, Stmt, TypeName } from '../ir';
+import { CTOR, methodPlace, walkStmts } from '../ir';
 import { helperNames, vbaHelperGlobals } from '../library';
-import { ParseError, type ParseResult, type Token, isTrailing, lineOf, markGap, negate, rawStmt } from './common';
+import { ParseError, type ParseResult, type Token, isTrailing, lineOf, mapTree, markGap, negate, rawStmt } from './common';
 import { normalize } from './normalize';
 
 const OPS = ['<>', '<=', '>=', ':=', '=', '<', '>', '+', '-', '*', '/', '\\', '^', '&', '(', ')', ',', '.', ':', ';', '#', '!'];
@@ -135,6 +135,8 @@ class VbaParser {
   loops: LoopCtx[] = [];
   helpers = helperNames('vba');
   helperGlobals = vbaHelperGlobals();
+  /** "Type X ... End Type" blocks (become classes together with NeuX / X_methode). */
+  udts: { name: string; fields: string[] }[] = [];
 
   constructor(
     public src: string,
@@ -250,6 +252,10 @@ class VbaParser {
       this.procedure();
       return;
     }
+    if (this.kw('type')) {
+      this.typeDecl();
+      return;
+    }
     if (this.kw('dim') || this.kw('const') || this.cur() === 'name') {
       const isConst = this.kw('const');
       if (this.kw('dim') || isConst) this.p++;
@@ -287,6 +293,33 @@ class VbaParser {
       this.addVar(name);
       if (allowInit && this.eat('=')) out.push({ k: 'set', name, value: this.expr() });
     } while (this.eat(','));
+  }
+
+  /** Type Konto / kontostand As Long / End Type */
+  typeDecl() {
+    this.p++;
+    const name = this.name();
+    this.lineEnd();
+    const fields: string[] = [];
+    while (!(this.kw('end') && this.kw('type', 1))) {
+      if (this.cur() === 'eof') this.fail('"End Type" fehlt.');
+      if (this.cur() === 'nl' || this.cur() === 'comment') {
+        this.p++;
+        continue;
+      }
+      const fTok = this.tok;
+      const field = this.name();
+      if (this.is('(')) this.fail('Arrays in Type haben noch keinen Block.');
+      let type: string | null = null;
+      if (this.eatKw('as')) type = this.name();
+      const hint = vbaTypeHint(type, fTok.x?.suffix) ?? (type && this.udts.some((u) => u.name.toLowerCase() === type!.toLowerCase()) ? (`obj<${this.udts.find((u) => u.name.toLowerCase() === type!.toLowerCase())!.name}>` as const) : null);
+      if (hint) this.types[`${name}#${field}`] = hint;
+      fields.push(field);
+      this.lineEnd();
+    }
+    this.p += 2;
+    this.lineEnd();
+    this.udts.push({ name, fields });
   }
 
   procedure() {
@@ -563,6 +596,8 @@ class VbaParser {
       if (target?.k === 'pcall' && target.callee.k === 'var' && target.args.length === 1) {
         return [{ k: 'listset', list: target.callee, index: target.args[0], value }];
       }
+      // self.kontostand = 0  /  konto.inhaber = "Ada"
+      if (target?.k === 'member') return [{ k: 'fset', obj: target.obj, name: target.name, value }];
       this.fail('Diese Zuweisung hat noch keinen Block.');
     }
     // call without parentheses: "Name a, b" (arguments may be left out: "a, , c")
@@ -1005,10 +1040,58 @@ export function parseVba(src: string): ParseResult {
   const locals: Record<string, string[]> = {};
   let main: Stmt[] = [...p.globalStmts];
   const procNames = new Set(p.procs.map((x) => x.name.toLowerCase()));
+  const classes: ClassDef[] = p.udts.map((u) => ({ name: u.name, fields: [], ctorParams: [], ctor: [], methods: [] }));
+  const classOf = (name: string) => classes.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  /** Moves the type hints of a procedure to its class place. */
+  const moveHints = (from: string, to: string, params: string[]) => {
+    for (const key of Object.keys(p.types)) {
+      if (!key.startsWith(`${from}:`)) continue;
+      const rest = key.slice(from.length + 1);
+      if (rest.toLowerCase() !== 'self') p.types[`${to}:${params.find((x) => x.toLowerCase() === rest.toLowerCase()) ?? rest}`] = p.types[key];
+      delete p.types[key];
+    }
+  };
+  const selfToObject = (stmts: Stmt[]) => mapTree(stmts, (e) => (e.k === 'var' && e.name.toLowerCase() === 'self' ? { k: 'self' } : undefined));
 
   for (const proc of p.procs) {
     const known = new Set([...moduleVars, ...(p.vars.get(proc.name) ?? [])]);
     const body = fixProc(proc.body, known, procNames, proc.isFunction ? proc.name : null);
+    // NeuKonto(...) -> constructor, Konto_einzahlen(self, ...) -> method
+    const ctorOf = proc.isFunction && /^neu/i.test(proc.name) ? classOf(proc.name.slice(3)) : undefined;
+    const us = proc.name.indexOf('_');
+    const methodOf = !ctorOf && us > 0 && proc.params[0]?.toLowerCase() === 'self' ? classOf(proc.name.slice(0, us)) : undefined;
+    if (ctorOf) {
+      const fieldNames = p.udts.find((u) => u.name === ctorOf.name)!.fields.map((f) => f.toLowerCase());
+      let stmts = selfToObject(body);
+      // last "NeuKonto = self"
+      const last = stmts[stmts.length - 1];
+      if (last?.k === 'return' && last.value?.k === 'self') stmts = stmts.slice(0, -1);
+      // leading "self.x = <constant>" are start values of the properties
+      const isConst = (e: Ex) => !JSON.stringify(e ?? null).includes('"var"') && !JSON.stringify(e ?? null).includes('"call"');
+      let i = 0;
+      for (; i < stmts.length; i++) {
+        const s = stmts[i];
+        if (s.k !== 'fset' || s.obj?.k !== 'self' || !fieldNames.includes(s.name.toLowerCase()) || !isConst(s.value) || ctorOf.fields.some((f) => f.name.toLowerCase() === s.name.toLowerCase())) break;
+        ctorOf.fields.push({ name: s.name, value: s.value });
+      }
+      ctorOf.ctorParams = proc.params;
+      ctorOf.ctor = stmts.slice(i);
+      if (proc.comment) ctorOf.comment = proc.comment;
+      const place = methodPlace(ctorOf.name, CTOR);
+      moveHints(proc.name, place, proc.params);
+      delete p.types[`${place}:return`];
+      locals[place] = [...(p.vars.get(proc.name) ?? [])].filter((v) => v !== 'self' && !proc.params.some((x) => x.toLowerCase() === v) && !moduleVars.has(v)).map((v) => originalCase(body, v));
+      continue;
+    }
+    if (methodOf) {
+      const name = proc.name.slice(us + 1);
+      const params = proc.params.slice(1);
+      const place = methodPlace(methodOf.name, name);
+      moveHints(proc.name, place, params);
+      methodOf.methods.push({ name, params, body: selfToObject(body), returns: proc.isFunction, ...(proc.comment ? { comment: proc.comment } : {}), ...(proc.defaults?.length ? { defaults: proc.defaults.slice(1) } : {}) });
+      locals[place] = [...(p.vars.get(proc.name) ?? [])].filter((v) => v !== 'self' && !params.some((x) => x.toLowerCase() === v) && !moduleVars.has(v)).map((v) => originalCase(body, v));
+      continue;
+    }
     if (proc === mainProc) {
       main = [...main, ...(proc.comment ? [{ k: 'comment', text: proc.comment } as Stmt] : []), ...body];
       // locals of Main are main variables
@@ -1029,6 +1112,7 @@ export function parseVba(src: string): ParseResult {
   const program: Program = {
     main,
     functions,
+    ...(classes.length ? { classes } : {}),
     meta: { types: p.types, locals, mainName: mainProc && mainProc.name.toLowerCase() !== 'main' ? mainProc.name : undefined },
   };
   return normalize(program, 'vba');

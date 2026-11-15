@@ -1,10 +1,10 @@
 // Java / C# / C++ / JavaScript source -> IR
 
 import { foldPlus } from '../generators/base';
-import type { Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt, TypeName } from '../ir';
-import { assignedNames, walkAllExprs, walkStmts } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt, TypeName } from '../ir';
+import { CTOR, assignedNames, methodPlace, walkAllExprs, walkStmts } from '../ir';
 import { helperNames } from '../library';
-import { ParseError, type ParseResult, type Token, blankLineBefore, caseCondition, endsCase, errorVarToMessage, hasInnerBreak, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
+import { ParseError, type ParseResult, type Token, blankLineBefore, mapTree, caseCondition, endsCase, errorVarToMessage, hasInnerBreak, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
 import { normalize } from './normalize';
 
 type CLang = Exclude<Lang, 'python' | 'vba'>;
@@ -267,6 +267,19 @@ class CParser {
     public comments: Comment[],
   ) {
     this.helpers = helperNames(lang);
+    // names of the user's classes (known before they are parsed, e.g. for "Hund h;")
+    toks.forEach((t, i) => {
+      if (t.t === 'name' && (t.v === 'class' || t.v === 'struct') && toks[i + 1]?.t === 'name' && !this.helpers.has(toks[i + 1].v)) this.userClasses.add(toks[i + 1].v);
+    });
+  }
+
+  userClasses = new Set<string>();
+
+  /** Type hint, including objects of the user's classes. */
+  hintOf(t: string): TypeName | null {
+    const base = t.replace(/^(const\s+)?/, '').replace(/[&*]$/, '').trim();
+    if (this.userClasses.has(base)) return `obj<${base}>`;
+    return typeHint(t);
   }
 
   get tok(): Token {
@@ -397,6 +410,11 @@ class CParser {
       const save = this.p;
       this.skipModifiers();
       if (this.isName('class') || this.isName('struct') || this.isName('interface') || this.isName('enum') || this.isName('record')) {
+        const isMainClass = (this.lang === 'java' || this.lang === 'csharp') && this.isName('class') && !this.className && this.mainClassAhead();
+        if (!isMainClass && (this.isName('class') || this.isName('struct')) && !this.helpers.has(this.peek().v)) {
+          this.classDecl();
+          return;
+        }
         if ((this.lang === 'java' || this.lang === 'csharp') && this.isName('class') && !this.className) {
           this.p++;
           this.className = this.name();
@@ -497,6 +515,10 @@ class CParser {
           this.skipBalanced();
           return;
         }
+        if (this.isName('class') || this.isName('struct')) {
+          this.classDecl();
+          return;
+        }
         this.fail('Weitere Klassen haben noch keinen Block.');
       }
       this.memberRest(start, out);
@@ -540,7 +562,8 @@ class CParser {
 
   fnDepth = 0;
 
-  functionRest(retType: string, name: string) {
+  /** Parameters and body of a function, method or constructor (null for a prototype). */
+  parseCallable(retType: string, scope: string, isMain = false): { params: string[]; defaults: Ex[]; body: Stmt[]; declared: Set<string> } | null {
     this.expect('(');
     const params: string[] = [];
     const defaults: Ex[] = [];
@@ -571,19 +594,19 @@ class CParser {
       while (this.eat(',')) this.name();
     }
     while (this.isName('const') || this.isName('noexcept') || this.isName('override')) this.p++;
-    if (this.eat(';')) return; // prototype
-    const isMain = (this.lang === 'java' && name === 'main') || (this.lang === 'csharp' && name === 'Main') || (this.lang === 'cpp' && name === 'main');
+    if (this.is(':') && this.lang === 'cpp') this.fail('Initialisierungslisten haben noch keinen Block.');
+    if (this.eat(';')) return null; // prototype
     const savedScope = this.scope;
     const savedDeclared = this.declaredInScope;
-    this.scope = isMain ? '' : name;
+    this.scope = isMain ? '' : scope;
     this.declaredInScope = new Set(params);
     if (!isMain) {
       paramTypes.forEach((t, i) => {
-        const h = typeHint(t);
-        if (h) this.types[`${name}:${params[i]}`] = h;
+        const h = this.hintOf(t);
+        if (h) this.types[`${scope}:${params[i]}`] = h;
       });
-      const rh = typeHint(retType);
-      if (rh) this.types[`${name}:return`] = rh;
+      const rh = this.hintOf(retType);
+      if (rh) this.types[`${scope}:return`] = rh;
     }
     this.fnDepth++;
     let body: Stmt[];
@@ -595,12 +618,19 @@ class CParser {
     const declared = this.declaredInScope;
     this.scope = savedScope;
     this.declaredInScope = savedDeclared;
+    return { params, defaults, body, declared };
+  }
+
+  functionRest(retType: string, name: string) {
+    const isMain = (this.lang === 'java' && name === 'main') || (this.lang === 'csharp' && name === 'Main') || (this.lang === 'cpp' && name === 'main');
+    const r = this.parseCallable(retType, name, isMain);
+    if (!r) return;
+    const { params, defaults, body, declared } = r;
     if (this.helpers.has(name)) return;
     if (isMain) {
       if (this.lang === 'cpp') {
         const last = body[body.length - 1];
         if (last?.k === 'return' && last.value?.k === 'num' && last.value.v === 0) body.pop();
-        walkStmts(body, () => {});
       }
       this.mainBody = body;
       return;
@@ -608,6 +638,137 @@ class CParser {
     this.locals[name] = [...declared].filter((n) => !params.includes(n));
     const returns = retType !== 'void' && !(this.lang === 'javascript' && !hasValueReturn(body));
     this.functions.push({ name, params, body, returns, ...(defaults.length ? { defaults } : {}) });
+  }
+
+  // ---- user-defined classes ----------------------------------------------------------
+
+  inClass = false;
+  classes: ClassDef[] = [];
+
+  /** Java/C#: is the class starting here the one with the main method? */
+  mainClassAhead(): boolean {
+    let depth = 0;
+    for (let j = this.p; j < this.toks.length; j++) {
+      const t = this.toks[j];
+      if (t.t === 'op' && t.v === '{') depth++;
+      if (t.t === 'op' && t.v === '}') {
+        depth--;
+        if (depth === 0) return false;
+      }
+      if (depth === 1 && t.t === 'name' && (t.v === 'main' || t.v === 'Main') && this.toks[j + 1]?.v === '(') return true;
+    }
+    return false;
+  }
+
+  /** class / struct with properties, constructor and methods. */
+  classDecl(): void {
+    this.p++; // class / struct
+    const name = this.name();
+    if (this.is(':') || this.isName('extends') || this.isName('implements')) this.fail('Vererbung hat noch keinen Block.');
+    if (this.is('<')) this.fail('Generische Klassen haben noch keinen Block.');
+    this.expect('{');
+    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [] };
+    const fieldNames: string[] = [];
+    const methodLocals = new Map<string, Set<string>>();
+    const saved = this.inClass;
+    this.inClass = true;
+    try {
+      while (!this.is('}')) {
+        if (this.cur() === 'eof') this.fail('"}" fehlt.');
+        const comments = this.commentsBefore(this.tok.s);
+        const comment = comments.map((c) => (c as any).text).join('\n');
+        if ((this.isName('public') || this.isName('private') || this.isName('protected')) && this.peek().v === ':') {
+          this.p += 2;
+          continue;
+        }
+        this.skipModifiers();
+        // constructor
+        if ((this.tok.v === name || (this.lang === 'javascript' && this.tok.v === 'constructor')) && this.peek().v === '(') {
+          this.p++;
+          const place = methodPlace(name, CTOR);
+          const r = this.parseCallable('void', place);
+          if (r && (r.params.length || r.body.length)) {
+            cls.ctorParams = r.params;
+            cls.ctor = r.body;
+            methodLocals.set(place, r.declared);
+          }
+          continue;
+        }
+        // JavaScript method "name(...) { }" or property "name = value;"
+        if (this.lang === 'javascript' && this.cur() === 'name') {
+          const mname = this.name();
+          if (this.eat('=')) {
+            cls.fields.push({ name: mname, value: this.expr() });
+            fieldNames.push(mname);
+            this.eat(';');
+            continue;
+          }
+          const place = methodPlace(name, mname);
+          const r = this.parseCallable('', place)!;
+          cls.methods.push({ name: mname, params: r.params, body: r.body, returns: hasValueReturn(r.body), ...(comment ? { comment } : {}) });
+          methodLocals.set(place, r.declared);
+          continue;
+        }
+        const type = this.parseType();
+        if (!type) this.fail('Typ erwartet.');
+        const member = this.name();
+        if (this.is('(')) {
+          const place = methodPlace(name, member);
+          const r = this.parseCallable(type, place)!;
+          cls.methods.push({ name: member, params: r.params, body: r.body, returns: type !== 'void', ...(comment ? { comment } : {}) });
+          methodLocals.set(place, r.declared);
+          continue;
+        }
+        // C# auto property: "public string Name { get; set; } = "";"
+        if (this.is('{') && (this.peek().v === 'get' || this.peek().v === 'set' || this.peek().v === 'private' || this.peek().v === 'init')) {
+          this.skipBalanced();
+          const hint = this.hintOf(type);
+          if (hint) this.types[`${name}#${member}`] = hint;
+          fieldNames.push(member);
+          if (this.eat('=')) {
+            cls.fields.push({ name: member, value: this.expr() });
+            this.expect(';');
+          }
+          continue;
+        }
+        // properties: "int x = 0, y;"
+        let fname = member;
+        while (true) {
+          const hint = this.hintOf(type);
+          if (hint) this.types[`${name}#${fname}`] = hint;
+          fieldNames.push(fname);
+          if (this.eat('=')) cls.fields.push({ name: fname, value: this.is('{') ? this.initList() : this.expr() });
+          if (!this.eat(',')) break;
+          fname = this.name();
+        }
+        this.expect(';');
+      }
+      this.expect('}');
+      this.eat(';');
+    } finally {
+      this.inClass = saved;
+    }
+    // properties used without "this." inside the methods
+    const fix = (stmts: Stmt[], place: string, params: string[]) => {
+      const local = methodLocals.get(place) ?? new Set();
+      const isField = (n: string) => fieldNames.includes(n) && !params.includes(n) && !local.has(n);
+      const self: Expr = { k: 'self' };
+      const mapped = mapTree(stmts, (e) => (e.k === 'var' && isField(e.name) ? { k: 'member', obj: self, name: e.name } : undefined));
+      const visit = (list: Stmt[]): Stmt[] =>
+        list.map((s0) => {
+          let s: any = { ...s0 };
+          for (const key of ['body', 'else', 'handler']) if (Array.isArray(s[key])) s[key] = visit(s[key]);
+          if (s.branches) s.branches = s.branches.map((b: any) => ({ ...b, body: visit(b.body) }));
+          if (s.k === 'set' && isField(s.name)) s = { k: 'fset', obj: self, name: s.name, value: s.value, gap: s.gap, trail: s.trail };
+          if (s.k === 'change' && isField(s.name)) s = { k: 'fset', obj: self, name: s.name, value: { k: 'bin', op: 'ADD', a: { k: 'member', obj: self, name: s.name }, b: s.by }, gap: s.gap, trail: s.trail };
+          return s;
+        });
+      return visit(mapped);
+    };
+    cls.ctor = fix(cls.ctor, methodPlace(name, CTOR), cls.ctorParams);
+    cls.methods = cls.methods.map((m) => ({ ...m, body: fix(m.body, methodPlace(name, m.name), m.params) }));
+    // "this.x = ..." in the constructor of a property without start value is fine as it is
+    this.classes.push(cls);
   }
 
   // ---- types ---------------------------------------------------------------------
@@ -879,12 +1040,21 @@ class CParser {
         return { k: 'set', name: target.name, value: { k: 'bin', op, a: target, b: value } };
       }
       if (target?.k === 'index' && e.op === '=') return { k: 'listset', list: target.list, index: target.index, value };
+      // this.x = ...  /  konto.x += ...
+      if (target?.k === 'member' && target.name !== 'CurrentCulture') {
+        const ops: Record<string, any> = { '+=': 'ADD', '-=': 'SUB', '*=': 'MUL', '/=': 'DIV', '%=': 'MOD' };
+        if (e.op === '=') return { k: 'fset', obj: target.obj, name: target.name, value };
+        return { k: 'fset', obj: target.obj, name: target.name, value: { k: 'bin', op: ops[e.op], a: target, b: value } };
+      }
       return rawStmt(this.srcFrom(start) + ';', this.lang);
     }
     if (this.lang === 'cpp' && e.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'srand') return { k: 'comment', text: '__drop__' };
     if (e.k === 'pbin' && e.op === '=' && e.a?.k === 'member' && e.a.name === 'CurrentCulture') return { k: 'comment', text: '__drop__' };
     if (e.k === 'punary' && (e.op === '++' || e.op === '--') && e.a?.k === 'var') {
       return { k: 'change', name: e.a.name, by: { k: 'num', v: e.op === '++' ? 1 : -1 } };
+    }
+    if (e.k === 'punary' && (e.op === '++' || e.op === '--') && e.a?.k === 'member') {
+      return { k: 'fset', obj: e.a.obj, name: e.a.name, value: { k: 'bin', op: e.op === '++' ? 'ADD' : 'SUB', a: e.a, b: { k: 'num', v: 1 } } };
     }
     return { k: 'pexpr', e };
   }
@@ -948,7 +1118,8 @@ class CParser {
         return null;
       }
       const after = this.peek();
-      if (!(after.t === 'op' && ['=', ';', ',', '['].includes(after.v))) {
+      const cppObject = this.lang === 'cpp' && this.userClasses.has(type) && after.v === '(';
+      if (!cppObject && !(after.t === 'op' && ['=', ';', ',', '['].includes(after.v))) {
         this.p = save;
         return null;
       }
@@ -971,7 +1142,7 @@ class CParser {
       }
       if (this.is('[')) this.fail('C-Arrays haben noch keinen Block.');
       const scopeKey = isField ? '' : this.scope;
-      const hint = typeHint(t);
+      const hint = this.hintOf(t);
       if (/^(Scanner|Random|BufferedReader|mt19937|random_device|default_random_engine)\b/.test(t.replace(/^(java\.util\.)/, ''))) {
         // input / random helpers are created automatically
         if (this.eat('=')) this.expr();
@@ -979,6 +1150,19 @@ class CParser {
       }
       if (hint) this.types[`${scopeKey}:${name}`] = hint;
       if (!isField) this.declaredInScope.add(name);
+      if (this.lang === 'cpp' && this.userClasses.has(t) && !this.is('=')) {
+        // Hund h("Bello");  /  Hund h;
+        const args: Ex[] = [];
+        if (this.eat('(')) {
+          while (!this.is(')')) {
+            args.push(this.assignment());
+            if (!this.eat(',')) break;
+          }
+          this.expect(')');
+        }
+        out.push({ k: 'set', name, value: { k: 'pnew', type: t, args } });
+        continue;
+      }
       if (this.eat('=')) {
         let value: Ex;
         if (this.is('{')) value = this.initList();
@@ -1156,7 +1340,7 @@ class CParser {
         this.p += 2;
         const list = this.expr();
         this.expect(')');
-        const hint = declType ? typeHint(declType) : null;
+        const hint = declType ? this.hintOf(declType) : null;
         if (hint) this.types[`${this.scope}:${nameTok.v}`] = hint;
         this.declaredInScope.add(nameTok.v);
         const body = this.body();
@@ -1458,10 +1642,16 @@ class CParser {
         case 'false':
           this.p++;
           return { k: 'bool', v: t.v === 'true' };
+        case 'this':
+          if (this.inClass) {
+            this.p++;
+            return { k: 'self' };
+          }
+          this.fail('"this" außerhalb einer Klasse hat noch keinen Block.');
+          break;
         case 'null':
         case 'nullptr':
         case 'undefined':
-        case 'this':
         case 'super':
         case 'base':
           this.fail(`"${t.v}" hat noch keinen Block.`);
@@ -1543,6 +1733,7 @@ class CParser {
   subExpr(code: string): Ex {
     const { toks } = tokenizeCLike(code, this.lang);
     const p = new CParser(code, this.lang, toks, []);
+    p.inClass = this.inClass;
     const e = p.expr();
     if (p.tok.t !== 'eof') throw new ParseError('Ausdruck im Text konnte nicht gelesen werden.', this.tok.s);
     return e;
@@ -1617,6 +1808,9 @@ export function parseCLike(src: string, lang: CLang): ParseResult {
   const program: Program = {
     main: inlineWrappers(main),
     functions: p.functions.map((f) => ({ ...f, body: inlineWrappers(f.body) })),
+    ...(p.classes.length
+      ? { classes: p.classes.map((c) => ({ ...c, ctor: inlineWrappers(c.ctor), methods: c.methods.map((m) => ({ ...m, body: inlineWrappers(m.body) })) })) }
+      : {}),
     meta: { types: p.types, locals: p.locals, imports: p.imports, className: p.className },
   };
   return normalize(program, lang);

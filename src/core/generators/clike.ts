@@ -1,7 +1,8 @@
 // Shared generator for the C-like languages: Java, C#, C++ and JavaScript.
 
 import { MAIN, type PlaceInfo, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
-import type { Ex, Expr, FunctionDef, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef, Stmt } from '../ir';
+import { CTOR, methodPlace } from '../ir';
 import { stmtExprs, walkExpr } from '../ir';
 import { ATOM, BaseGen, type Code, foldPlus } from './base';
 
@@ -100,6 +101,7 @@ export abstract class CLikeGen extends BaseGen {
     if (t === 'bool') return 'false';
     if (isList(t)) return this.listLiteral({ k: 'list', items: [] }, elemOf(t), true)[0];
     if (isDict(t)) return this.dictLiteral({ k: 'dict', entries: [] }, ...dictParts(t))[0];
+    if (t.startsWith('obj<')) return this.lang === 'cpp' ? null : 'null';
     return null;
   }
 
@@ -254,7 +256,10 @@ export abstract class CLikeGen extends BaseGen {
         this.emit(this.libCode(s.lib, s.fn, s.args)[0] + ';');
         break;
       case 'methodstmt':
-        this.emit(`${this.sub(s.obj, ATOM)}.${s.name}(${this.args(s.args)});`);
+        this.emit(`${this.memberPrefix(s.obj)}${s.name}(${this.args(s.args)});`);
+        break;
+      case 'fset':
+        this.emit(`${this.memberPrefix(s.obj)}${s.name} = ${this.sub(s.value)};`);
         break;
       case 'return':
         if (this.place === MAIN) this.emit(this.mainReturn());
@@ -350,6 +355,78 @@ export abstract class CLikeGen extends BaseGen {
     const types = this.a.paramTypes(f.name);
     const params = f.params.map((p, i) => `${this.typeName(types[i], 'param')} ${this.id(p)}`).join(', ');
     return `${prefix}${ret} ${this.id(f.name)}(${params})`;
+  }
+
+  // ---- classes ----------------------------------------------------------------------------
+
+  protected classHead(c: ClassDef): string {
+    return `class ${c.name}`;
+  }
+  protected classEnd(): string {
+    return '}';
+  }
+  /** Declaration of a property (null: properties are set in the constructor, as in JavaScript). */
+  protected fieldDecl(t: Ty, name: string, value: string | null): string | null {
+    return `${this.typeName(t, 'decl')} ${name}${value !== null ? ` = ${value}` : this.defaultInit(t)};`;
+  }
+  protected ctorHead(c: ClassDef, params: string): string {
+    return `${c.name}(${params})`;
+  }
+  protected methodHead(_c: ClassDef, m: FunctionDef, ret: string, params: string): string {
+    return `${ret} ${m.name}(${params})`;
+  }
+  /** "obj." / "this->" before a property or method name. */
+  protected memberPrefix(obj: Ex): string {
+    return `${this.sub(obj, ATOM)}.`;
+  }
+
+  protected paramList(place: string, params: string[]): string {
+    const types = this.a.paramTypes(place);
+    return params.map((p, i) => (this.typed ? `${this.typeName(types[i], 'param')} ${this.id(p)}` : this.id(p))).join(', ');
+  }
+
+  protected emitClass(c: ClassDef) {
+    this.withId(c.id, () => {
+      if (c.comment) this.comment(c.comment);
+      this.open(this.classHead(c), () => {
+        const ctorPlace = methodPlace(c.name, CTOR);
+        this.place = ctorPlace;
+        const fieldInits: string[] = [];
+        const start = this.lines.length;
+        for (const name of this.classFields(c)) {
+          const t = this.a.fieldType(c.name, name);
+          const f = c.fields.find((x) => x.name === name);
+          const value = f?.value ? this.sub(f.value) : null;
+          const line = this.fieldDecl(t, name, value);
+          if (line) this.emit(line);
+          // JavaScript: properties are created in the constructor (only the ones with a start value)
+          else if (f) fieldInits.push(`this.${name} = ${value ?? this.defaultValue(t) ?? 'null'};`);
+        }
+        const gap = () => {
+          if (this.lines.length > start) this.blank();
+        };
+        if (c.ctorParams.length || c.ctor.length || fieldInits.length) {
+          gap();
+          this.open(this.ctorHead(c, this.paramList(ctorPlace, c.ctorParams)), () => {
+            for (const l of fieldInits) this.emit(l);
+            this.functionBody(this.a.place(ctorPlace));
+          });
+          if (c.ctorParams.length && this.lang === 'cpp') this.emit(`${c.name}() {}`);
+        }
+        for (const m of c.methods) {
+          const place = methodPlace(c.name, m.name);
+          this.place = place;
+          gap();
+          this.withId(m.id, () => {
+            if (m.comment) this.comment(m.comment);
+            const ret = m.returns ? this.typeName(this.a.returnType(place), 'ret') : 'void';
+            this.open(this.methodHead(c, m, ret, this.paramList(place, m.params)), () => this.functionBody(this.a.place(place)));
+          });
+        }
+      }, false);
+      this.emit(this.classEnd());
+    });
+    this.place = MAIN;
   }
 
   protected emitFunction(f: FunctionDef, prefix: string) {
@@ -472,9 +549,13 @@ export abstract class CLikeGen extends BaseGen {
       case 'lib':
         return this.libCode(e.lib, e.fn, e.args);
       case 'method':
-        return [`${this.sub(e.obj, ATOM)}.${e.name}(${this.args(e.args)})`, ATOM];
+        return [`${this.memberPrefix(e.obj)}${e.name}(${this.args(e.args)})`, ATOM];
       case 'member':
-        return [`${this.sub(e.obj, ATOM)}.${e.name}`, ATOM];
+        return [`${this.memberPrefix(e.obj)}${e.name}`, ATOM];
+      case 'self':
+        return [this.lang === 'cpp' ? '(*this)' : 'this', this.lang === 'cpp' ? ATOM : ATOM];
+      case 'new':
+        return [`${this.lang === 'cpp' ? '' : 'new '}${e.cls}(${this.args(e.args)})`, ATOM];
       case 'cond':
         return [`${this.sub(e.cond, C.cond + 1)} ? ${this.sub(e.a, C.cond + 1)} : ${this.sub(e.b, C.cond)}`, C.cond];
       case 'errmsg': {

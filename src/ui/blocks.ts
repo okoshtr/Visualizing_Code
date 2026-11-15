@@ -21,6 +21,7 @@ export const COLORS = {
   library: '#3482D6',
   function: '#E5507A',
   dict: '#B9671E',
+  klass: '#2C9ACB',
   advanced: '#6B7891',
 } as const;
 
@@ -55,6 +56,8 @@ const blockStyles: Record<string, Blockly.Theme.BlockStyle> = {
   procedure_blocks: style(COLORS.function),
   advanced_blocks: style(COLORS.advanced),
   dict_blocks: style(COLORS.dict),
+  class_blocks: style(COLORS.klass),
+  class_hat_blocks: style(COLORS.klass, { hat: 'cap' } as any),
 };
 
 const categoryStyles: Record<string, { colour: string }> = Object.fromEntries(
@@ -70,6 +73,7 @@ const categoryStyles: Record<string, { colour: string }> = Object.fromEntries(
     function_category: COLORS.function,
     advanced_category: COLORS.advanced,
     dict_category: COLORS.dict,
+    class_category: COLORS.klass,
   }).map(([k, c]) => [k, { colour: c }]),
 );
 
@@ -349,15 +353,15 @@ const JSON_BLOCKS: any[] = [
   },
   {
     type: 'member_get',
-    message0: '%1 . %2',
+    message0: 'Eigenschaft %2 von %1',
     args0: [
       { type: 'input_value', name: 'OBJ' },
       { type: 'field_input', name: 'NAME', text: 'eigenschaft' },
     ],
     inputsInline: true,
     output: null,
-    style: 'advanced_blocks',
-    tooltip: 'Eine Eigenschaft eines Objekts.',
+    style: 'class_blocks',
+    tooltip: 'Liest eine Eigenschaft eines Objekts, z. B. den Kontostand eines Kontos.',
   },
   {
     type: 'code_expr',
@@ -424,6 +428,7 @@ function installBlocks() {
 
   installVariadic();
   installDictCreate();
+  installClassBlocks();
   Blockly.common.defineBlocksWithJsonArray([
     {
       type: 'controls_dowhile',
@@ -500,8 +505,8 @@ function installBlocks() {
   Blockly.Blocks['func_return'].onchange = function (this: Blockly.BlockSvg) {
     if (!this.workspace || this.workspace.isFlyout) return;
     let b: Blockly.Block | null = this;
-    while ((b = b.getSurroundParent())) if (b.type.startsWith('procedures_def')) break;
-    this.setWarningText(b ? null : 'Dieser Block gehört in eine eigene Funktion ("definiere ...").');
+    while ((b = b.getSurroundParent())) if (b.type.startsWith('procedures_def') || b.type === 'class_method') break;
+    this.setWarningText(b ? null : 'Dieser Block gehört in eine eigene Funktion ("definiere ...") oder eine Methode.');
   };
 }
 
@@ -608,6 +613,146 @@ function installDictCreate() {
     },
     domToMutation(this: any, m: Element) {
       this.argCount_ = Number(m.getAttribute('pairs') ?? 0);
+      this.updateArgs_();
+    },
+  };
+}
+
+// --- classes ------------------------------------------------------------------------
+
+const CLASS_MEMBERS = new Set(['class_field', 'class_ctor', 'class_method']);
+
+/** Creates workspace variables for the parameter names typed into a text field. */
+function ensureParamVariables(block: Blockly.Block, text: string) {
+  const ws = block.workspace;
+  if (!ws || ws.isFlyout) return;
+  for (const name of text.split(/[,;\s]+/).filter(Boolean)) {
+    if (!ws.getVariableMap().getVariable(name)) ws.getVariableMap().createVariable(name);
+  }
+}
+
+function installClassBlocks() {
+  Blockly.common.defineBlocksWithJsonArray([
+    {
+      type: 'class_def',
+      message0: 'Klasse %1',
+      args0: [{ type: 'field_input', name: 'NAME', text: 'Konto' }],
+      message1: '%1',
+      args1: [{ type: 'input_statement', name: 'BODY', check: 'ClassMember' }],
+      style: 'class_hat_blocks',
+      tooltip: 'Eine Klasse ist ein Bauplan für Objekte: Sie hat Eigenschaften (Daten) und Methoden (was das Objekt kann).',
+    },
+    {
+      type: 'class_field',
+      message0: 'Eigenschaft %1 Startwert %2',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'wert' },
+        { type: 'input_value', name: 'VALUE' },
+      ],
+      inputsInline: true,
+      previousStatement: 'ClassMember',
+      nextStatement: 'ClassMember',
+      style: 'class_blocks',
+      tooltip: 'Eine Eigenschaft, die jedes Objekt dieser Klasse hat, mit ihrem Startwert.',
+    },
+    {
+      type: 'class_ctor',
+      message0: 'beim Erzeugen mit Werten %1',
+      args0: [{ type: 'field_input', name: 'PARAMS', text: '' }],
+      message1: '%1',
+      args1: [{ type: 'input_statement', name: 'DO' }],
+      previousStatement: 'ClassMember',
+      nextStatement: 'ClassMember',
+      style: 'class_blocks',
+      tooltip: 'Läuft, wenn ein neues Objekt erzeugt wird. Die Namen der Werte trennst du mit Kommas, z. B. "name, alter".',
+    },
+    {
+      type: 'class_method',
+      message0: 'Methode %1 mit Werten %2',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'methode' },
+        { type: 'field_input', name: 'PARAMS', text: '' },
+      ],
+      message1: '%1',
+      args1: [{ type: 'input_statement', name: 'DO' }],
+      previousStatement: 'ClassMember',
+      nextStatement: 'ClassMember',
+      style: 'class_blocks',
+      tooltip: 'Etwas, das jedes Objekt der Klasse kann. Mit "gib zurück" liefert die Methode einen Wert.',
+    },
+    {
+      type: 'self_obj',
+      message0: 'dieses Objekt',
+      output: null,
+      style: 'class_blocks',
+      tooltip: 'Das Objekt, dessen Methode gerade läuft (in Python "self", sonst "this").',
+    },
+    {
+      type: 'field_set',
+      message0: 'setze Eigenschaft %1 von %2 auf %3',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'wert' },
+        { type: 'input_value', name: 'OBJ' },
+        { type: 'input_value', name: 'VALUE' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      style: 'class_blocks',
+      tooltip: 'Ändert eine Eigenschaft eines Objekts.',
+    },
+  ]);
+  for (const type of ['class_ctor', 'class_method']) {
+    const init = Blockly.Blocks[type].init;
+    Blockly.Blocks[type].init = function (this: Blockly.Block) {
+      init.call(this);
+      this.getField('PARAMS')!.setValidator((v: string) => {
+        ensureParamVariables(this, v);
+        return v;
+      });
+    };
+  }
+  const onchange = function (this: Blockly.BlockSvg) {
+    if (!this.workspace || this.workspace.isFlyout) return;
+    const parent = this.getSurroundParent();
+    if (CLASS_MEMBERS.has(this.type)) this.setWarningText(parent?.type === 'class_def' ? null : 'Dieser Block gehört in einen "Klasse"-Block.');
+    else if (this.type === 'self_obj') {
+      let b: Blockly.Block | null = this;
+      while ((b = b.getSurroundParent())) if (b.type === 'class_def') break;
+      this.setWarningText(b ? null : '"dieses Objekt" gibt es nur in den Methoden einer Klasse.');
+    }
+  };
+  for (const type of [...CLASS_MEMBERS, 'self_obj']) Blockly.Blocks[type].onchange = onchange;
+
+  // neues Objekt <Klasse> mit (Werte ...)
+  Blockly.Blocks['obj_new'] = {
+    argCount_: 0,
+    init(this: any) {
+      this.argCount_ = 0;
+      const head = this.appendDummyInput('HEAD').appendField('neues Objekt').appendField(new Blockly.FieldTextInput('Konto'), 'CLASS');
+      addArgButtons(this, head);
+      this.setInputsInline(true);
+      this.setOutput(true);
+      this.setStyle('class_blocks');
+      this.setTooltip('Erzeugt ein neues Objekt der Klasse. Mit + und − änderst du die Anzahl der Werte für "beim Erzeugen".');
+    },
+    updateArgs_(this: any) {
+      rebuildArgs(this, this.argCount_, (i: number) => (i === 0 ? 'mit' : ''), () => null);
+    },
+    saveExtraState(this: any) {
+      return { args: this.argCount_ };
+    },
+    loadExtraState(this: any, s: any) {
+      this.argCount_ = s?.args ?? 0;
+      this.updateArgs_();
+    },
+    mutationToDom(this: any) {
+      const m = Blockly.utils.xml.createElement('mutation');
+      m.setAttribute('args', String(this.argCount_));
+      return m;
+    },
+    domToMutation(this: any, m: Element) {
+      this.argCount_ = Number(m.getAttribute('args') ?? 0);
       this.updateArgs_();
     },
   };
@@ -941,13 +1086,50 @@ export const TOOLBOX = {
     { kind: 'category', name: 'Funktionen', categorystyle: 'function_category', custom: 'FUNKTIONEN' },
     {
       kind: 'category',
+      name: 'Klassen',
+      categorystyle: 'class_category',
+      contents: [
+        {
+          kind: 'block',
+          type: 'class_def',
+          fields: { NAME: 'Hund' },
+          inputs: {
+            BODY: {
+              block: {
+                type: 'class_field',
+                fields: { NAME: 'name' },
+                inputs: { VALUE: txt('') },
+                next: {
+                  block: {
+                    type: 'class_method',
+                    fields: { NAME: 'bellen', PARAMS: '' },
+                    inputs: { DO: { block: { type: 'io_print', inputs: { TEXT: txt('Wuff!') } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        { kind: 'block', type: 'class_field', fields: { NAME: 'alter' }, inputs: { VALUE: num(0) } },
+        { kind: 'block', type: 'class_ctor', fields: { PARAMS: 'name' } },
+        { kind: 'block', type: 'class_method', fields: { NAME: 'methode', PARAMS: '' } },
+        { kind: 'block', type: 'self_obj' },
+        { kind: 'block', type: 'member_get', fields: { NAME: 'name' }, inputs: { OBJ: { block: { type: 'self_obj' } } } },
+        { kind: 'block', type: 'field_set', fields: { NAME: 'alter' }, inputs: { OBJ: { block: { type: 'self_obj' } }, VALUE: num(1) } },
+        { kind: 'block', type: 'obj_new', fields: { CLASS: 'Hund' } },
+        { kind: 'block', type: 'method_stmt', fields: { NAME: 'bellen' } },
+        { kind: 'block', type: 'method_expr', fields: { NAME: 'methode' } },
+        { kind: 'block', type: 'func_return' },
+      ],
+    },
+    {
+      kind: 'category',
       name: 'Mehr',
       categorystyle: 'advanced_category',
       contents: [
         { kind: 'block', type: 'code_comment' },
         { kind: 'block', type: 'method_stmt', fields: { NAME: 'methode' } },
         { kind: 'block', type: 'method_expr', fields: { NAME: 'methode' } },
-        { kind: 'block', type: 'member_get' },
       ],
     },
   ],

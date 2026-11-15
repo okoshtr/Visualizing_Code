@@ -1,11 +1,11 @@
 // Compiles and runs the generated code with the real toolchains (if installed)
 // and compares the output with the built-in runner.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EXAMPLES, generate, parse, type Lang, type Program } from '../src/core';
+import { EXAMPLES, generate, langFromFileName, parse, type Lang, type Program } from '../src/core';
 import { runToText } from './helpers';
 
 const has = (cmd: string, args: string[] = ['--version']) => spawnSync(cmd, args, { stdio: 'ignore' }).status === 0;
@@ -139,5 +139,18 @@ describe('new constructs run the same with the real toolchains', () => {
       expect(strip(actual)).toBe(strip(expected));
       expect(actual).toContain('Fehler:');
     });
+  }
+});
+
+describe('hand-written classes run in every language', () => {
+  const HUNDE = 'Bello ist 2 Jahre alt\nLuna ist 0 Jahre alt\nBello ist älter';
+  const dir = join(__dirname, 'samples');
+  for (const file of ['klassen.py', 'Klassen.java', 'Tiere.cs', 'klassen.cpp', 'klassen.js']) {
+    const program = parse(readFileSync(join(dir, file), 'utf8'), langFromFileName(file)!).program;
+    for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+      it.skipIf(!runner.available)(`${file} -> ${lang}`, () => {
+        expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(HUNDE);
+      });
+    }
   }
 });

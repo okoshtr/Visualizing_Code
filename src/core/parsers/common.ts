@@ -100,7 +100,7 @@ export function mapTree<T>(node: T, fn: (e: Expr) => Expr | undefined): T {
   return visit(node);
 }
 
-const STMT_KINDS = new Set(['print', 'set', 'change', 'if', 'repeat', 'while', 'for', 'foreach', 'break', 'continue', 'listadd', 'listset', 'callstmt', 'libstmt', 'methodstmt', 'return', 'try', 'throw', 'dset', 'comment', 'pexpr']);
+const STMT_KINDS = new Set(['print', 'set', 'change', 'if', 'repeat', 'while', 'for', 'foreach', 'break', 'continue', 'listadd', 'listset', 'callstmt', 'libstmt', 'methodstmt', 'return', 'try', 'throw', 'dset', 'fset', 'comment', 'pexpr']);
 const isExprKind = (k: string) => !STMT_KINDS.has(k);
 
 /** In a catch handler: references to the caught error variable become "Fehlermeldung". */

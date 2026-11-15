@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { EXAMPLES, LANGS, fromBlockly, generate, parse, toBlockly, walkStmts, type Program } from '../src/core';
-import { runToText } from './helpers';
+import { allStmts, runToText } from './helpers';
 
 function raws(p: Program): string[] {
   const out: string[] = [];
-  walkStmts([...(p.main ?? []), ...p.functions.flatMap((f) => f.body)], (s) => {
+  walkStmts(allStmts(p), (s) => {
     if (s.k === 'raw') out.push(s.code);
   });
   return out;

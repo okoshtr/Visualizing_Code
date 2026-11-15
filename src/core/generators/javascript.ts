@@ -1,5 +1,5 @@
 import { MAIN, type PlaceInfo, type Ty, isDict, isList, namesIn } from '../analysis';
-import type { Ex, Expr, FunctionDef } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
 
@@ -36,6 +36,18 @@ export class JavaScriptGen extends CLikeGen {
     if (newline) return `console.log(${this.sub(value, 0, { k: 'str', v: '' })})`;
     const v = this.isStringy(value) ? this.sub(value, 0) : `String(${this.sub(value)})`;
     return `process.stdout.write(${v})`;
+  }
+
+  protected fieldDecl(): string | null {
+    return null;
+  }
+
+  protected ctorHead(_c: ClassDef, params: string): string {
+    return `constructor(${params})`;
+  }
+
+  protected methodHead(_c: ClassDef, m: FunctionDef, _ret: string, params: string): string {
+    return `${m.name}(${params})`;
   }
 
   protected catchDecl(name: string): string {
@@ -180,6 +192,7 @@ export class JavaScriptGen extends CLikeGen {
     const main = this.a.place(MAIN);
     for (const n of namesIn(this.program.main ?? [])) this.mentionsInMain.add(n);
 
+    const classes = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, '')));
     this.place = MAIN;
     const mainLines = this.capture(() => this.withId(this.program.mainId, () => this.functionBody(main)));
@@ -214,7 +227,7 @@ export class JavaScriptGen extends CLikeGen {
       if (imp.lang === 'javascript') out.push(`const ${imp.alias} = require(${JSON.stringify(imp.module)});`);
     }
     if (out.length) out.push('');
-    for (const part of [globals, helpers, ...fns]) if (part.length) out.push(...part, '');
+    for (const part of [globals, helpers, ...classes, ...fns]) if (part.length) out.push(...part, '');
     out.push(...mainLines);
     return this.result(out.join('\n'));
   }

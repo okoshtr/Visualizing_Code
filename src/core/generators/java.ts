@@ -1,5 +1,5 @@
 import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
-import type { Ex, Expr } from '../ir';
+import type { ClassDef, Ex, Expr } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
 
@@ -10,12 +10,14 @@ export class JavaGen extends CLikeGen {
   protected readonly indentUnit = '    ';
 
   protected typeName(t: Ty): string {
+    if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
     if (isDict(t)) return `LinkedHashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return { int: 'int', double: 'double', string: 'String', bool: 'boolean' }[t] ?? 'Object';
   }
 
   private boxed(t: Ty): string {
+    if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
     if (isDict(t)) return `LinkedHashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return BOX[t] ?? 'Object';
@@ -144,6 +146,10 @@ export class JavaGen extends CLikeGen {
     return super.eqCode(a, b, neg);
   }
 
+  protected classHead(c: ClassDef): string {
+    return `static class ${c.name}`;
+  }
+
   protected floorFn(): string {
     return 'Math.floor';
   }
@@ -167,6 +173,7 @@ export class JavaGen extends CLikeGen {
 
   generate(): GenResult {
     this.depth = 1;
+    const classes = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, 'static ')));
     this.place = MAIN;
     const main = this.capture(() =>
@@ -195,7 +202,7 @@ export class JavaGen extends CLikeGen {
     });
     const meta = this.program.meta;
     const className = this.opts.className ?? (meta?.sourceLang === 'java' ? meta.className : undefined) ?? 'Main';
-    const bodyParts = [fields, helpers, ...fns, main].filter((p) => p.length);
+    const bodyParts = [fields, helpers, ...classes, ...fns, main].filter((p) => p.length);
     const inner: string[] = [];
     bodyParts.forEach((p, i) => {
       if (i > 0 && inner[inner.length - 1] !== '') inner.push('');

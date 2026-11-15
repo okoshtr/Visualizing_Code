@@ -71,6 +71,10 @@ export type Expr = Node &
     | { k: 'cond'; cond: Ex; a: Ex; b: Ex }
     /** Message of the error caught by the surrounding "versuche ... falls Fehler" block. */
     | { k: 'errmsg' }
+    /** The object whose method is running ("dieses Objekt": self / this). */
+    | { k: 'self' }
+    /** New object of a user-defined class. */
+    | { k: 'new'; cls: string; args: Ex[] }
     /** Dictionary (map) literal. */
     | { k: 'dict'; entries: { key: Ex; value: Ex }[] }
     /** Value for a key in a dictionary. */
@@ -117,6 +121,8 @@ export type Stmt = Node &
     | { k: 'throw'; value: Ex }
     /** set the value for a key in a dictionary */
     | { k: 'dset'; dict: Ex; key: Ex; value: Ex }
+    /** set a property (field) of an object */
+    | { k: 'fset'; obj: Ex; name: string; value: Ex }
     | { k: 'comment'; text: string }
     | { k: 'raw'; code: string; lang: Lang }
     // ---- parse-only ----
@@ -136,7 +142,7 @@ export interface FunctionDef {
   defaults?: Ex[];
 }
 
-export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>` | `dict<${string}>`;
+export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>` | `dict<${string}>` | `obj<${string}>`;
 
 export interface ImportInfo {
   lang: Lang;
@@ -161,13 +167,31 @@ export interface ProgramMeta {
   sourceLang?: Lang;
 }
 
+export interface ClassDef {
+  id?: string;
+  name: string;
+  /** Properties with their start value. */
+  fields: { name: string; value: Ex }[];
+  /** Parameters and statements of the constructor ("beim Erzeugen"). */
+  ctorParams: string[];
+  ctor: Stmt[];
+  /** Methods (the object is available as "dieses Objekt"). */
+  methods: FunctionDef[];
+  comment?: string;
+}
+
 export interface Program {
   /** Body of the "when program starts" block; null if there is no start block. */
   main: Stmt[] | null;
   mainId?: string;
   functions: FunctionDef[];
+  classes?: ClassDef[];
   meta?: ProgramMeta;
 }
+
+/** Name of the analysis "place" of a method or constructor: "Klasse.methode" / "Klasse.__init__". */
+export const methodPlace = (cls: string, method: string) => `${cls}.${method}`;
+export const CTOR = '__init__';
 
 export interface Diagnostic {
   message: string;
@@ -245,6 +269,8 @@ export function stmtExprs(s: Stmt): Ex[] {
       return [s.value];
     case 'dset':
       return [s.dict, s.key, s.value];
+    case 'fset':
+      return [s.obj, s.value];
     default:
       return [];
   }
@@ -290,6 +316,8 @@ export function exprChildren(e: Expr): Ex[] {
       return e.entries.flatMap((x) => [x.key, x.value]);
     case 'dget':
       return [e.dict, e.key];
+    case 'new':
+      return e.args;
     case 'pin':
     case 'pbin':
       return [e.a, e.b];

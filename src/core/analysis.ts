@@ -1,7 +1,9 @@
 // Scope analysis and type inference shared by the code generators and the runner.
 
 import {
+  CTOR,
   childBodies,
+  methodPlace,
   type Ex,
   type Expr,
   type FunctionDef,
@@ -25,6 +27,8 @@ export const elemOf = (t: Ty): Ty => (isList(t) ? t.slice(5, -1) : isDict(t) ? d
 export const listOf = (t: Ty): Ty => `list<${t}>`;
 export const dictOf = (k: Ty, v: Ty): Ty => `dict<${k}|${v}>`;
 export const isNumeric = (t: Ty) => t === 'int' || t === 'double';
+/** Name of the user-defined class of an object type obj<Name>, otherwise null. */
+export const classOf = (t: Ty): string | null => (t.startsWith('obj<') ? t.slice(4, -1) : null);
 
 /** dict<K|V> -> [K, V] */
 export function dictParts(t: Ty): [Ty, Ty] {
@@ -87,6 +91,8 @@ export interface Analysis {
   varType(name: string, place: string): Ty;
   typeOf(e: Ex, place: string): Ty;
   paramTypes(fn: string): Ty[];
+  /** Type of a property of a user-defined class. */
+  fieldType(cls: string, name: string): Ty;
   returnType(fn: string): Ty;
   functionReturns(fn: string): boolean;
   isUserFunction(name: string): boolean;
@@ -159,6 +165,19 @@ export function analyze(program: Program): Analysis {
     ...program.functions.map((f) => ({ name: f.name, def: f, body: f.body, params: f.params })),
   ];
   const fnByName = new Map(program.functions.map((f) => [f.name, f]));
+  // methods and constructors are places named "Klasse.methode"
+  const classes = new Map((program.classes ?? []).map((c) => [c.name, c]));
+  for (const c of program.classes ?? []) {
+    const ctor: FunctionDef = { name: methodPlace(c.name, CTOR), params: c.ctorParams, body: c.ctor, returns: false };
+    placeList.push({ name: ctor.name, def: ctor, body: c.ctor, params: c.ctorParams });
+    fnByName.set(ctor.name, ctor);
+    for (const m of c.methods) {
+      const def: FunctionDef = { ...m, name: methodPlace(c.name, m.name) };
+      placeList.push({ name: def.name, def, body: m.body, params: m.params });
+      fnByName.set(def.name, def);
+    }
+  }
+  const isUserFn = (name: string) => fnByName.has(name) && !name.includes('.');
 
   // --- scopes ---------------------------------------------------------------
   const usedIn = new Map<string, Set<string>>(); // var -> places (excluding params / explicit locals)
@@ -222,7 +241,25 @@ export function analyze(program: Program): Analysis {
     return table(scopeOf(name, place)).get(name) ?? '?';
   };
   const retTypes = new Map<string, Ty>();
+  const fieldTypes = new Map<string, Map<string, Ty>>();
   let changed = false;
+  const assignField = (cls: string, name: string, t: Ty) => {
+    if (hints[`${cls}#${name}`]) return;
+    if (!fieldTypes.has(cls)) fieldTypes.set(cls, new Map());
+    const m = fieldTypes.get(cls)!;
+    const old = m.get(name) ?? '?';
+    const next = unify(old, t);
+    if (next !== old) {
+      m.set(name, next);
+      changed = true;
+    }
+  };
+  const fieldType = (cls: string, name: string): Ty => hints[`${cls}#${name}`] ?? fieldTypes.get(cls)?.get(name) ?? '?';
+  /** Parameters of a method / constructor get the types of the arguments. */
+  const assignArgs = (place: string, args: Ex[], from: string) => {
+    const f = fnByName.get(place);
+    if (f) args.forEach((a, i) => f.params[i] !== undefined && assign(f.params[i], f.name, typeOf(a, from)));
+  };
   const assign = (name: string, place: string, t: Ty) => {
     const key = keyOf(name, place);
     if (hints[key]) return;
@@ -335,6 +372,20 @@ export function analyze(program: Program): Analysis {
       }
       case 'dget':
         return dictParts(typeOf(e.dict, place))[1];
+      case 'self': {
+        const cls = place.includes('.') ? place.slice(0, place.indexOf('.')) : '';
+        return cls ? `obj<${cls}>` : 'any';
+      }
+      case 'new':
+        return `obj<${e.cls}>`;
+      case 'member': {
+        const cls = classOf(typeOf(e.obj, place));
+        return cls ? fieldType(cls, e.name) : 'any';
+      }
+      case 'method': {
+        const cls = classOf(typeOf(e.obj, place));
+        return cls && classes.get(cls)?.methods.some((m) => m.name === e.name) ? (retTypes.get(methodPlace(cls, e.name)) ?? '?') : 'any';
+      }
       default:
         return 'any';
     }
@@ -376,6 +427,14 @@ export function analyze(program: Program): Analysis {
           if (f) x.args.forEach((a, i) => f.params[i] !== undefined && assign(f.params[i], f.name, typeOf(a, place)));
           break;
         }
+        case 'new':
+          assignArgs(methodPlace(x.cls, CTOR), x.args, place);
+          break;
+        case 'method': {
+          const cls = classOf(typeOf(x.obj, place));
+          if (cls) assignArgs(methodPlace(cls, x.name), x.args, place);
+          break;
+        }
         case 'lib': {
           const fn = isExternalLib(x.lib) ? undefined : findLibFn(x.lib, x.fn);
           fn?.params.forEach((p, i) =>
@@ -388,6 +447,7 @@ export function analyze(program: Program): Analysis {
 
   for (let pass = 0; pass < 12; pass++) {
     changed = false;
+    for (const c of program.classes ?? []) for (const f of c.fields) assignField(c.name, f.name, typeOf(f.value, methodPlace(c.name, CTOR)));
     for (const p of places) {
       walkStmts(p.body, (s) => {
         for (const e of stmtExprs(s)) visitExprHints(e, p.name);
@@ -425,6 +485,16 @@ export function analyze(program: Program): Analysis {
           case 'dset':
             if (s.dict?.k === 'var') assign(s.dict.name, p.name, dictOf(typeOf(s.key, p.name), typeOf(s.value, p.name)));
             break;
+          case 'fset': {
+            const cls = classOf(typeOf(s.obj, p.name));
+            if (cls) assignField(cls, s.name, typeOf(s.value, p.name));
+            break;
+          }
+          case 'methodstmt': {
+            const cls = classOf(typeOf(s.obj, p.name));
+            if (cls) assignArgs(methodPlace(cls, s.name), s.args, p.name);
+            break;
+          }
           case 'callstmt': {
             const f = fnByName.get(s.name);
             if (f) s.args.forEach((a, i) => f.params[i] !== undefined && assign(f.params[i], f.name, typeOf(a, p.name)));
@@ -489,13 +559,14 @@ export function analyze(program: Program): Analysis {
       if (e?.k === 'var') return varType(e.name, place);
       return resolveTy(t);
     },
+    fieldType: (cls, name) => resolveTy(fieldType(cls, name)),
     paramTypes: (fn) => {
       const f = fnByName.get(fn);
       return f ? f.params.map((p) => varType(p, fn)) : [];
     },
     returnType: (fn) => resolveTy(retTypes.get(fn) ?? (fnByName.get(fn)?.returns ? '?' : 'void')),
     functionReturns: (fn) => !!fnByName.get(fn)?.returns,
-    isUserFunction: (name) => fnByName.has(name),
+    isUserFunction: isUserFn,
     allNames,
     warnings,
   };

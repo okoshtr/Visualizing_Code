@@ -2,6 +2,7 @@
 
 import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
+import { CTOR, methodPlace } from './ir';
 import { findLibFn, isExternalLib } from './library';
 
 export interface RunHost {
@@ -56,7 +57,13 @@ class Return {
   constructor(public value: any) {}
 }
 
-type Frame = { place: string; vars: Map<string, any> };
+type Frame = { place: string; vars: Map<string, any>; self?: Obj };
+
+/** An object of a user-defined class. */
+export class Obj {
+  fields = new Map<string, any>();
+  constructor(public cls: string) {}
+}
 
 /**
  * Formats a value the way the real program in `lang` would print it.
@@ -82,6 +89,7 @@ export function formatValue(v: any, lang: Lang, ty: Ty = '', printed = false, ne
     if (lang === 'javascript') return `Map(${v.size}) {${items.length ? ' ' + items.join(', ') + ' ' : ''}}`;
     return `{${items.join(', ')}}`;
   }
+  if (v instanceof Obj) return `${v.cls}(${[...v.fields].map(([k, x]) => `${k}=${formatValue(x, lang, '', printed, true)}`).join(', ')})`;
   if (typeof v === 'string' && nested && lang === 'python') return `'${v}'`;
   if (v === undefined || v === null) return '';
   return String(v);
@@ -403,8 +411,14 @@ class Runner {
         await this.lib(s.lib, s.fn, s.args);
         return;
       case 'methodstmt':
-        this.err(`Die Methode "${s.name}" kann die eingebaute Ausführung nicht ausführen.`);
-        break;
+        await this.callMethod(await this.expr(s.obj), s.name, s.args);
+        return;
+      case 'fset': {
+        const obj = await this.expr(s.obj);
+        if (!(obj instanceof Obj)) this.err(`"${s.name}" kann nur bei Objekten eigener Klassen gesetzt werden.`);
+        obj.fields.set(s.name, await this.expr(s.value));
+        return;
+      }
       case 'return':
         throw new Return(s.value ? await this.expr(s.value) : undefined);
       case 'comment':
@@ -416,6 +430,54 @@ class Runner {
         await this.expr(s.e);
         return;
     }
+  }
+
+  /** Creates an object: start values of the properties, then the constructor. */
+  async create(cls: string, argExprs: Ex[]): Promise<Obj> {
+    const c = this.program.classes?.find((x) => x.name === cls);
+    if (!c) this.err(`Die Klasse "${cls}" gibt es nicht.`);
+    const obj = new Obj(cls);
+    const args: any[] = [];
+    for (const a of argExprs) args.push(await this.expr(a));
+    const place = methodPlace(cls, CTOR);
+    const vars = new Map<string, any>();
+    c.ctorParams.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, place)));
+    this.stack.push({ place, vars, self: obj });
+    const saved = this.current;
+    try {
+      for (const f of c.fields) obj.fields.set(f.name, await this.expr(f.value));
+      await this.block(c.ctor);
+    } catch (e) {
+      if (!(e instanceof Return)) throw e;
+    } finally {
+      this.stack.pop();
+      this.current = saved;
+    }
+    return obj;
+  }
+
+  async callMethod(obj: any, name: string, argExprs: Ex[]): Promise<any> {
+    if (!(obj instanceof Obj)) this.err(`Die Methode "${name}" kann die eingebaute Ausführung nicht ausführen.`);
+    const m = this.program.classes?.find((x) => x.name === obj.cls)?.methods.find((x) => x.name === name);
+    if (!m) this.err(`Die Klasse "${obj.cls}" hat keine Methode "${name}".`);
+    if (this.stack.length > 1500) this.err('Zu viele verschachtelte Aufrufe (endlose Rekursion?).');
+    const args: any[] = [];
+    for (const a of argExprs) args.push(await this.expr(a));
+    const place = methodPlace(obj.cls, name);
+    const vars = new Map<string, any>();
+    m.params.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, place)));
+    this.stack.push({ place, vars, self: obj });
+    const saved = this.current;
+    try {
+      await this.block(m.body);
+    } catch (e) {
+      if (e instanceof Return) return e.value;
+      throw e;
+    } finally {
+      this.stack.pop();
+      this.current = saved;
+    }
+    return undefined;
   }
 
   async call(name: string, argExprs: Ex[]): Promise<any> {
@@ -596,12 +658,25 @@ class Runner {
         if (!d.has(k)) this.err(`Den Schlüssel ${formatValue(k, this.lang)} gibt es im Wörterbuch nicht.`);
         return d.get(k);
       }
-      case 'method':
-        this.err(`Die Methode "${e.name}" kann die eingebaute Ausführung nicht ausführen.`);
-        break;
-      case 'member':
-        this.err(`"${e.name}" kann die eingebaute Ausführung nicht auswerten.`);
-        break;
+      case 'method': {
+        const id = e.id;
+        const r = await this.callMethod(await this.expr(e.obj), e.name, e.args);
+        this.current = id;
+        return r;
+      }
+      case 'member': {
+        const obj = await this.expr(e.obj);
+        if (!(obj instanceof Obj)) this.err(`"${e.name}" kann die eingebaute Ausführung nicht auswerten.`);
+        if (!obj.fields.has(e.name)) this.err(`Das Objekt hat keine Eigenschaft "${e.name}".`);
+        return obj.fields.get(e.name);
+      }
+      case 'self': {
+        const f = [...this.stack].reverse().find((x) => x.self);
+        if (!f?.self) this.err('"dieses Objekt" gibt es nur in Methoden einer Klasse.');
+        return f.self;
+      }
+      case 'new':
+        return this.create(e.cls, e.args);
       case 'raw':
         this.err('Ein Code-Block kann in der eingebauten Ausführung nicht laufen.');
         break;

@@ -1,5 +1,6 @@
 import { MAIN, type PlaceInfo, type Ty, isDict, isList } from '../analysis';
-import type { Ex, Expr, FunctionDef, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef, Stmt } from '../ir';
+import { CTOR, methodPlace } from '../ir';
 import { walkStmts } from '../ir';
 import { ATOM, BaseGen, type Code, type GenResult, foldPlus } from './base';
 
@@ -39,7 +40,14 @@ export class VbaGen extends BaseGen {
   private fn: FunctionDef | null = null;
   private labelCount = 0;
 
+  /** VBA ignores case: a variable "konto" would clash with the Type "Konto". */
+  id(name: string): string {
+    const base = super.id(name);
+    return this.classes.some((c) => c.name.toLowerCase() === base.toLowerCase()) ? `${base}Obj` : base;
+  }
+
   typeName(t: Ty): string {
+    if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return 'Variant';
     if (isDict(t)) return 'Object';
     return { int: 'Long', double: 'Double', string: 'String', bool: 'Boolean' }[t] ?? 'Variant';
@@ -53,34 +61,74 @@ export class VbaGen extends BaseGen {
   // ---- program -----------------------------------------------------------------------
 
   generate(): GenResult {
+    // classes: VBA has class modules only as separate files, so a class becomes a Type
+    // plus a function "NeuKlasse" (constructor) and procedures "Klasse_methode"
+    const classProcs = this.classes.map((c) =>
+      this.capture(() =>
+        this.withId(c.id, () => {
+          if (c.comment) this.comment(c.comment);
+          this.procedure({ name: `Neu${c.name}`, params: c.ctorParams, body: c.ctor, returns: true }, { cls: c, ctor: true });
+          for (const m of c.methods) {
+            this.blank();
+            this.withId(m.id, () => this.procedure(m, { cls: c, ctor: false }));
+          }
+        }),
+      ),
+    );
     const fns = this.program.functions.map((f) => this.capture(() => this.withId(f.id, () => this.procedure(f))));
     const main = this.capture(() => this.withId(this.program.mainId, () => this.procedure(null)));
     const out = ['Option Explicit', ''];
+    for (const c of this.classes) {
+      out.push(`Type ${c.name}`);
+      for (const name of this.classFields(c)) out.push(`    ${name} As ${this.typeName(this.a.fieldType(c.name, name))}`);
+      out.push('End Type', '');
+      if (JSON.stringify(this.program).includes(`list<obj<${c.name}>>`)) this.warn('VBA: Listen von Objekten werden nicht unterstützt.');
+    }
     const globals = [...this.a.globals].sort();
     for (const g of globals) out.push(`Dim ${this.id(g)} As ${this.typeName(this.a.varType(g, MAIN))}`);
     if (globals.length) out.push('');
     for (const h of this.helperCode()) out.push(h, '');
+    for (const c of classProcs) out.push(...c, '');
     for (const f of fns) out.push(...f, '');
     out.push(...main);
     for (const imp of this.program.meta?.imports ?? []) if (imp.lang !== 'vba') this.warn(`Die Bibliothek "${imp.module}" gibt es nur in ${imp.lang}.`);
     return this.result(out.join('\n'));
   }
 
-  private procedure(f: FunctionDef | null) {
+  /** VBA name of the running procedure (for "name = value" returns) and its analysis place. */
+  private fnVba = '';
+  private fnPlace = '';
+
+  private procedure(f: FunctionDef | null, cls?: { cls: ClassDef; ctor: boolean }) {
     this.fn = f;
-    this.place = f ? f.name : MAIN;
+    const c = cls?.cls;
+    this.place = c ? methodPlace(c.name, cls!.ctor ? CTOR : f!.name) : f ? f.name : MAIN;
+    this.fnPlace = this.place;
+    this.fnVba = c ? (cls!.ctor ? `Neu${c.name}` : `${c.name}_${f!.name}`) : f ? this.id(f.name) : '';
     const place = this.a.place(this.place);
     this.extraDims = [];
     this.labelCount = 0;
-    const bodyLines = this.capture(() => this.indented(() => this.body(place.body)));
+    const bodyLines = this.capture(() =>
+      this.indented(() => {
+        if (c && cls!.ctor) for (const fld of c.fields) this.emit(`self.${fld.name} = ${this.sub(fld.value, 0, { k: 'num', v: 0 })}`);
+        this.body(place.body);
+        if (c && cls!.ctor) this.emit(`${this.fnVba} = self`);
+      }),
+    );
     if (f?.comment) this.comment(f.comment);
     if (f) {
-      const types = this.a.paramTypes(f.name);
-      const params = f.params.map((p, i) => (isList(types[i]) || types[i] === 'any' ? `${this.id(p)} As Variant` : `ByVal ${this.id(p)} As ${this.typeName(types[i])}`)).join(', ');
-      if (f.returns) this.emit(`Function ${this.id(f.name)}(${params}) As ${this.typeName(this.a.returnType(f.name))}`);
-      else this.emit(`Sub ${this.id(f.name)}(${params})`);
+      const types = this.a.paramTypes(this.place);
+      const list = f.params.map((p, i) =>
+        isList(types[i]) || types[i] === 'any' || types[i].startsWith('obj<') ? `${this.id(p)} As ${this.typeName(types[i])}` : `ByVal ${this.id(p)} As ${this.typeName(types[i])}`,
+      );
+      if (c && !cls!.ctor) list.unshift(`self As ${c.name}`);
+      const params = list.join(', ');
+      const ret = c && cls!.ctor ? c.name : this.typeName(this.a.returnType(this.place));
+      if (f.returns) this.emit(`Function ${this.fnVba}(${params}) As ${ret}`);
+      else this.emit(`Sub ${this.fnVba}(${params})`);
     } else this.emit(`Sub ${(this.program.meta?.sourceLang === 'vba' && this.program.meta.mainName) || 'Main'}()`);
     this.indented(() => {
+      if (c && cls!.ctor) this.emit(`Dim self As ${c.name}`);
       for (const line of this.dims(place)) this.emit(line);
       if (!f && this.usesRandom) this.emit('Randomize');
     });
@@ -208,13 +256,19 @@ export class VbaGen extends BaseGen {
           this.emit(`${mod ? mod + '.' : ''}${s.fn}${s.args.length ? ' ' + this.args(s.args) : ''}`);
         } else this.emit(this.libCode(s.lib, s.fn, s.args)[0]);
         break;
-      case 'methodstmt':
-        this.emit(`${this.sub(s.obj, ATOM)}.${s.name}${s.args.length ? ' ' + this.args(s.args) : ''}`);
+      case 'methodstmt': {
+        const cls = this.isClassType(s.obj);
+        if (cls) this.emit(`${cls}_${s.name} ${this.args([s.obj, ...s.args])}`);
+        else this.emit(`${this.sub(s.obj, ATOM)}.${s.name}${s.args.length ? ' ' + this.args(s.args) : ''}`);
+        break;
+      }
+      case 'fset':
+        this.emit(`${this.sub(s.obj, ATOM)}.${s.name} = ${this.sub(s.value)}`);
         break;
       case 'return':
         if (this.fn?.returns) {
-          const set = isDict(this.a.returnType(this.fn.name)) ? 'Set ' : '';
-          if (s.value) this.emit(`${set}${this.id(this.fn.name)} = ${this.sub(s.value)}`);
+          const set = isDict(this.a.returnType(this.fnPlace)) ? 'Set ' : '';
+          if (s.value) this.emit(`${set}${this.fnVba} = ${this.sub(s.value)}`);
           if (!this.isLastStatement(s)) this.emit('Exit Function');
         } else if (!this.isLastStatement(s)) this.emit('Exit Sub');
         break;
@@ -355,8 +409,15 @@ export class VbaGen extends BaseGen {
         return [`${this.id(e.name)}(${this.args(e.args)})`, ATOM];
       case 'lib':
         return this.libCode(e.lib, e.fn, e.args);
-      case 'method':
+      case 'method': {
+        const cls = this.isClassType(e.obj);
+        if (cls) return [`${cls}_${e.name}(${this.args([e.obj, ...e.args])})`, ATOM];
         return [`${this.sub(e.obj, ATOM)}.${e.name}(${this.args(e.args)})`, ATOM];
+      }
+      case 'self':
+        return ['self', ATOM];
+      case 'new':
+        return [`Neu${e.cls}(${this.args(e.args)})`, ATOM];
       case 'member':
         return [`${this.sub(e.obj, ATOM)}.${e.name}`, ATOM];
       case 'cond':

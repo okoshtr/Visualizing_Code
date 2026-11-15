@@ -1,5 +1,5 @@
 import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
-import type { Ex, Expr } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef } from '../ir';
 import { ATOM, type Code, type GenResult, foldPlus } from './base';
 import { C, CLikeGen } from './clike';
 
@@ -9,6 +9,7 @@ export class CSharpGen extends CLikeGen {
   protected override allman = true;
 
   protected typeName(t: Ty): string {
+    if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return `List<${this.typeName(elemOf(t))}>`;
     if (isDict(t)) return `Dictionary<${this.typeName(dictParts(t)[0])}, ${this.typeName(dictParts(t)[1])}>`;
     return { int: 'int', double: 'double', string: 'string', bool: 'bool' }[t] ?? 'object';
@@ -16,6 +17,18 @@ export class CSharpGen extends CLikeGen {
 
   protected printCode(value: Ex, newline: boolean): string {
     return `Console.${newline ? 'WriteLine' : 'Write'}(${this.sub(this.listsAsText(value), 0, { k: 'str', v: '' })})`;
+  }
+
+  protected fieldDecl(t: Ty, name: string, value: string | null): string | null {
+    return `public ${super.fieldDecl(t, name, value)}`;
+  }
+
+  protected ctorHead(c: ClassDef, params: string): string {
+    return `public ${c.name}(${params})`;
+  }
+
+  protected methodHead(_c: ClassDef, m: FunctionDef, ret: string, params: string): string {
+    return `public ${ret} ${m.name}(${params})`;
   }
 
   protected catchDecl(name: string): string {
@@ -135,6 +148,7 @@ export class CSharpGen extends CLikeGen {
 
   generate(): GenResult {
     this.depth = 1;
+    const classes = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, 'static ')));
     this.place = MAIN;
     const main = this.capture(() =>
@@ -166,7 +180,7 @@ export class CSharpGen extends CLikeGen {
       }
     });
     const inner: string[] = [];
-    [fields, helpers, ...fns, main]
+    [fields, helpers, ...classes, ...fns, main]
       .filter((p) => p.length)
       .forEach((p, i) => {
         if (i > 0 && inner[inner.length - 1] !== '') inner.push('');

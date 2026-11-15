@@ -3,9 +3,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { generate, langFromFileName, parse, walkStmts, LANGS } from '../src/core';
-import { runToText } from './helpers';
+import { allStmts, runToText } from './helpers';
 
 const dir = join(__dirname, 'samples');
+
+const HUNDE = 'Bello ist 2 Jahre alt\nLuna ist 0 Jahre alt\nBello ist älter\n';
 
 const EXPECTED: Record<string, string> = {
   'sample.py': 'Zahlen: [2, 4, 8, 10]\nSumme ist = 24\nHallo Ada, willkommen!\n49\nHALLO WELT 10\nHallo tleW ollaH\ngefunden\nEnde bei -2\n4 3 3.5 1024\nTrue\n',
@@ -17,6 +19,11 @@ const EXPECTED: Record<string, string> = {
   'Neu.java': 'Äpfel: 5\nn = 6\nKeine Zahl: "abc" ist keine ganze Zahl.\nMathe: sehr gut\nKunst: weiter üben\n',
   'neu.js': 'rot=1\nblau=2\ngrün=3\nWerktag\n4.5\nFehler: Division durch null\n',
   'neu.bas': 'i = 9\nperfekt\ngut\nüben\n',
+  'klassen.py': HUNDE,
+  'Klassen.java': HUNDE,
+  'Tiere.cs': HUNDE,
+  'klassen.cpp': HUNDE,
+  'klassen.js': HUNDE,
 };
 
 describe('hand-written samples', () => {
@@ -26,7 +33,7 @@ describe('hand-written samples', () => {
       const res = parse(readFileSync(join(dir, file), 'utf8'), lang);
       expect(res.diagnostics).toEqual([]);
       const raws: string[] = [];
-      walkStmts([...(res.program.main ?? []), ...res.program.functions.flatMap((f) => f.body)], (s) => {
+      walkStmts(allStmts(res.program), (s) => {
         if (s.k === 'raw') raws.push(s.code);
       });
       expect(raws).toEqual([]);

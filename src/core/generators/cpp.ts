@@ -1,5 +1,5 @@
 import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
-import type { Ex, Expr } from '../ir';
+import type { ClassDef, Ex, Expr } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
 
@@ -8,6 +8,7 @@ export class CppGen extends CLikeGen {
   protected readonly indentUnit = '    ';
 
   protected typeName(t: Ty, ctx: 'decl' | 'param' | 'ret' = 'decl'): string {
+    if (t.startsWith('obj<')) return t.slice(4, -1) + (ctx === 'param' ? '&' : '');
     if (isList(t)) return `vector<${this.typeName(elemOf(t), 'ret')}>${ctx === 'param' ? '&' : ''}`;
     if (isDict(t)) return `map<${this.typeName(dictParts(t)[0], 'ret')}, ${this.typeName(dictParts(t)[1], 'ret')}>${ctx === 'param' ? '&' : ''}`;
     const basic = { int: 'int', double: 'double', string: 'string', bool: 'bool' }[t];
@@ -27,6 +28,18 @@ export class CppGen extends CLikeGen {
     const parts = v?.k === 'join' ? v.parts : [v];
     const items = parts.map((p) => (this.typeOf(p) === 'bool' ? `(${this.sub(p, C.cond + 1)} ? "true" : "false")` : this.sub(p, C.add, { k: 'str', v: '' })));
     return `cout << ${items.join(' << ')}${newline ? ' << endl' : ''}`;
+  }
+
+  protected classHead(c: ClassDef): string {
+    return `struct ${c.name}`;
+  }
+
+  protected classEnd(): string {
+    return '};';
+  }
+
+  protected memberPrefix(obj: Ex): string {
+    return obj?.k === 'self' ? 'this->' : super.memberPrefix(obj);
   }
 
   protected catchDecl(name: string): string {
@@ -186,6 +199,7 @@ export class CppGen extends CLikeGen {
   }
 
   generate(): GenResult {
+    const classes = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, '')));
     const protos = this.program.functions.length > 1 ? this.program.functions.map((f) => `${this.functionHead(f, '')};`) : [];
     this.place = MAIN;
@@ -213,7 +227,10 @@ export class CppGen extends CLikeGen {
         this.blank();
       }
     });
-    const parts = [globals, helpers, protos, ...fns, main].filter((p) => p.length);
+    // classes may use the functions and the functions may use the classes: declare both first
+    const forward = this.classes.length && this.program.functions.length ? this.classes.map((c) => `struct ${c.name};`) : [];
+    const protosAll = this.classes.length && this.program.functions.length && !protos.length ? this.program.functions.map((f) => `${this.functionHead(f, '')};`) : protos;
+    const parts = [helpers, forward, protosAll, ...classes, globals, ...fns, main].filter((p) => p.length);
     const text = parts.map((p) => p.join('\n')).join('\n');
     const includes = new Set(['<iostream>', '<string>']);
     if (/\bvector</.test(text)) includes.add('<vector>');

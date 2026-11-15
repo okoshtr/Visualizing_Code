@@ -1,5 +1,5 @@
 import { type Analysis, MAIN, type Ty, elemOf, isList, isNumeric } from '../analysis';
-import type { Ex, Expr, Lang, Program, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, Lang, Program, Stmt } from '../ir';
 import { walkStmts } from '../ir';
 import { HELPERS, externalModule, findLibFn, implFor, isExternalLib } from '../library';
 import { freshName, ident } from '../names';
@@ -146,6 +146,25 @@ export abstract class BaseGen {
 
   protected isNum(e: Ex): boolean {
     return isNumeric(this.typeOf(e));
+  }
+
+  /** User-defined classes. */
+  protected get classes(): ClassDef[] {
+    return this.program.classes ?? [];
+  }
+
+  /** Properties of a class: declared ones plus those that are only set in its methods. */
+  protected classFields(c: ClassDef): string[] {
+    const names = c.fields.map((f) => f.name);
+    walkStmts([...c.ctor, ...c.methods.flatMap((m) => m.body)], (s) => {
+      if (s.k === 'fset' && s.obj?.k === 'self' && !names.includes(s.name)) names.push(s.name);
+    });
+    return names;
+  }
+
+  protected isClassType(e: Ex): string | null {
+    const t = this.typeOf(e);
+    return t.startsWith('obj<') ? t.slice(4, -1) : null;
   }
 
   /** Names of the caught errors of the surrounding "versuche" blocks (innermost last). */

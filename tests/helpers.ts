@@ -1,4 +1,4 @@
-import { type Program, type Lang, runProgram } from '../src/core';
+import { type Program, type Lang, type Stmt, runProgram } from '../src/core';
 
 /** Runs a program with the built-in runner and returns the console output. */
 export async function runToText(program: Program, lang: Lang, input: string[] = []): Promise<string> {
@@ -17,4 +17,13 @@ export async function runToText(program: Program, lang: Lang, input: string[] = 
     lang,
   );
   return out;
+}
+
+/** All statements of a program: main, functions, constructors and methods. */
+export function allStmts(p: Program): Stmt[] {
+  return [
+    ...(p.main ?? []),
+    ...p.functions.flatMap((f) => f.body),
+    ...(p.classes ?? []).flatMap((c) => [...c.ctor, ...c.methods.flatMap((m) => m.body)]),
+  ];
 }

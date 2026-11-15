@@ -5,7 +5,7 @@
 import { analyze, isDict, isList } from '../analysis';
 import { foldPlus } from '../generators/base';
 import type { Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
-import { exprEquals } from '../ir';
+import { CTOR, exprEquals, methodPlace } from '../ir';
 import { LIBRARIES, implFor } from '../library';
 import type { ParseResult } from './common';
 import { parseCLikeExpr } from './clike';
@@ -401,6 +401,7 @@ function tryPatterns<B>(lang: Lang, list: Compiled<B>[], node: Expr): { build: B
 
 class Normalizer {
   userFns: Map<string, FunctionDef>;
+  classNames: Map<string, string>;
   importAliases: Map<string, string>;
   diagnostics: Diagnostic[] = [];
 
@@ -410,6 +411,7 @@ class Normalizer {
   ) {
     const key = (s: string) => (lang === 'vba' ? s.toLowerCase() : s);
     this.userFns = new Map(program.functions.map((f) => [key(f.name), f]));
+    this.classNames = new Map((program.classes ?? []).map((c) => [key(c.name), c.name]));
     this.importAliases = new Map((program.meta?.imports ?? []).map((i) => [key(i.alias), i.module]));
   }
 
@@ -426,6 +428,14 @@ class Normalizer {
       entries.push({ key: this.expr(pair[0]), value: this.expr(pair[1]) });
     }
     return { k: 'dict', entries };
+  }
+
+  /** VBA: "Klasse_methode" -> methode */
+  vbaMethod(name: string): string | null {
+    const i = name.indexOf('_');
+    if (i < 0) return null;
+    const cls = this.program.classes?.find((c) => c.name.toLowerCase() === name.slice(0, i).toLowerCase());
+    return cls?.methods.find((m) => m.name.toLowerCase() === name.slice(i + 1).toLowerCase())?.name ?? null;
   }
 
   /** Arguments of a call of a user function: keyword arguments and default values are filled in. */
@@ -520,6 +530,8 @@ class Normalizer {
       if (c.k === 'var') {
         const f = fn;
         if (f && !f.returns) return { k: 'callstmt', name: f.name, args };
+        const m = this.lang === 'vba' ? this.vbaMethod(c.name) : null;
+        if (m && args.length) return { k: 'methodstmt', obj: args[0], name: m, args: args.slice(1) };
         return { k: 'libstmt', lib: 'ext:', fn: c.name, args };
       }
       if (c.k === 'member') {
@@ -543,6 +555,13 @@ class Normalizer {
         const c = e.callee;
         const fn = c.k === 'var' ? this.userFns.get(this.key(c.name)) : undefined;
         if (fn) return { k: 'call', name: fn.name, args: this.callArgs(fn, e) };
+        // Konto("Ada") / NeuKonto("Ada") (VBA): a new object
+        if (c.k === 'var') {
+          const cls = this.classNames.get(this.key(c.name)) ?? (this.lang === 'vba' && /^neu/i.test(c.name) ? this.classNames.get(this.key(c.name.slice(3))) : undefined);
+          if (cls) return { k: 'new', cls, args: e.args.map((a) => this.expr(a)) };
+          const m = this.lang === 'vba' ? this.vbaMethod(c.name) : null;
+          if (m && e.args.length) return { k: 'method', obj: this.expr(e.args[0]), name: m, args: e.args.slice(1).map((a) => this.expr(a)) };
+        }
         const args = e.args.map((a) => this.expr(a));
         if (e.kwargs) return this.raw(e);
         if (c.k === 'var') {
@@ -571,6 +590,8 @@ class Normalizer {
       }
       case 'pnew': {
         const t = e.type.replace(/<.*$/s, '').replace(/^(java\.util\.|System\.Collections\.Generic\.|std::)/, '');
+        const userCls = this.classNames.get(this.key(t));
+        if (userCls && !e.init) return { k: 'new', cls: userCls, args: e.args.map((a) => this.expr(a)) };
         if (['HashMap', 'LinkedHashMap', 'TreeMap', 'Map', 'Dictionary', 'map', 'unordered_map'].includes(t)) {
           // { {k, v}, ... }  /  new Map([[k, v], ...])  /  new HashMap<>(Map.of(...))
           if (e.init) return this.dictFromPairs(e.init) ?? this.raw(e);
@@ -668,10 +689,21 @@ function mapExprs(stmts: Stmt[], fn: (e: Expr) => Expr): Stmt[] {
 }
 
 function mapProgram(p: Program, fn: (e: Expr, place: string) => Expr): Program {
+  const exprIn = (e: Ex, place: string): Ex => (e ? (mapExprs([{ k: 'pexpr', e }], (x) => fn(x, place))[0] as any).e : e);
   return {
     ...p,
     main: p.main ? mapExprs(p.main, (e) => fn(e, '')) : null,
     functions: p.functions.map((f) => ({ ...f, body: mapExprs(f.body, (e) => fn(e, f.name)) })),
+    ...(p.classes
+      ? {
+          classes: p.classes.map((c) => ({
+            ...c,
+            fields: c.fields.map((x) => ({ ...x, value: exprIn(x.value, methodPlace(c.name, CTOR)) })),
+            ctor: mapExprs(c.ctor, (e) => fn(e, methodPlace(c.name, CTOR))),
+            methods: c.methods.map((m) => ({ ...m, body: mapExprs(m.body, (e) => fn(e, methodPlace(c.name, m.name))) })),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -711,6 +743,16 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
     meta: { ...program.meta, sourceLang: lang },
     main: program.main ? nz.stmts(program.main) : null,
     functions: program.functions.map(({ defaults: _d, ...f }) => ({ ...f, body: nz.stmts(f.body) })),
+    ...(program.classes
+      ? {
+          classes: program.classes.map((c) => ({
+            ...c,
+            fields: c.fields.map((x) => ({ ...x, value: nz.expr(x.value) })),
+            ctor: nz.stmts(c.ctor),
+            methods: c.methods.map(({ defaults: _d, ...m }) => ({ ...m, body: nz.stmts(m.body) })),
+          })),
+        }
+      : {}),
   };
   p = mapProgram(p, simplify);
 
@@ -791,7 +833,20 @@ function fixDictStatements(p: Program): Program {
       }
       return s;
     });
-  return { ...p, main: p.main ? fix(p.main, '') : null, functions: p.functions.map((f) => ({ ...f, body: fix(f.body, f.name) })) };
+  return {
+    ...p,
+    main: p.main ? fix(p.main, '') : null,
+    functions: p.functions.map((f) => ({ ...f, body: fix(f.body, f.name) })),
+    ...(p.classes
+      ? {
+          classes: p.classes.map((c) => ({
+            ...c,
+            ctor: fix(c.ctor, methodPlace(c.name, CTOR)),
+            methods: c.methods.map((m) => ({ ...m, body: fix(m.body, methodPlace(c.name, m.name)) })),
+          })),
+        }
+      : {}),
+  };
 }
 
 function mergeStr(parts: Ex[]): Ex[] {

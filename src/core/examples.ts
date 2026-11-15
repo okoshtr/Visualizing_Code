@@ -173,6 +173,43 @@ export const EXAMPLES: Example[] = [
     },
   },
   {
+    id: 'konto',
+    title: 'Bankkonto (Klasse)',
+    description: 'Eigene Klasse mit Eigenschaften, Konstruktor und Methoden',
+    program: {
+      functions: [],
+      classes: [
+        {
+          name: 'Konto',
+          fields: [{ name: 'kontostand', value: n(0) }],
+          ctorParams: ['inhaber'],
+          ctor: [{ k: 'fset', obj: { k: 'self' }, name: 'inhaber', value: v('inhaber') }],
+          methods: [
+            {
+              name: 'einzahlen',
+              params: ['betrag'],
+              returns: false,
+              body: [{ k: 'fset', obj: { k: 'self' }, name: 'kontostand', value: bin('ADD', { k: 'member', obj: { k: 'self' }, name: 'kontostand' }, v('betrag')) }],
+            },
+            {
+              name: 'info',
+              params: [],
+              returns: true,
+              body: [{ k: 'return', value: join({ k: 'member', obj: { k: 'self' }, name: 'inhaber' }, s(': '), { k: 'member', obj: { k: 'self' }, name: 'kontostand' }, s(' Euro')) }],
+            },
+          ],
+        },
+      ],
+      main: [
+        set('konto', { k: 'new', cls: 'Konto', args: [s('Ada')] }),
+        { k: 'methodstmt', obj: v('konto'), name: 'einzahlen', args: [n(50)] },
+        { k: 'methodstmt', obj: v('konto'), name: 'einzahlen', args: [n(25)] },
+        print({ k: 'method', obj: v('konto'), name: 'info', args: [] }),
+        print(join(s('Stand: '), { k: 'member', obj: v('konto'), name: 'kontostand' })),
+      ],
+    },
+  },
+  {
     id: 'zahlenraten',
     title: 'Zahlenraten',
     description: 'Zufallszahl, Schleife und Eingabe',

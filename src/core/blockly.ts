@@ -1,8 +1,17 @@
 // Conversion between the program model (IR) and Blockly's JSON serialization.
 // This module has no dependency on Blockly itself, so it can run in Node.
 
-import type { Ex, Expr, FunctionDef, Lang, Program, Stmt } from './ir';
+import type { ClassDef, Ex, Expr, FunctionDef, Lang, Program, Stmt } from './ir';
+import { walkStmts } from './ir';
 import { findLibFn } from './library';
+
+function hasValueReturn(body: Stmt[]): boolean {
+  let found = false;
+  walkStmts(body, (s) => {
+    if (s.k === 'return' && s.value) found = true;
+  });
+  return found;
+}
 
 export interface BlockState {
   type: string;
@@ -149,6 +158,10 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         };
       case 'dget':
         return { type: 'dict_get', id, inputs: inputs([['DICT', e.dict], ['KEY', e.key, textShadow('')]]) };
+      case 'self':
+        return { type: 'self_obj', id };
+      case 'new':
+        return { type: 'obj_new', id, fields: { CLASS: e.cls }, extraState: { args: e.args.length }, inputs: argInputs(e.args) };
       case 'raw':
         return { type: 'code_expr', id, fields: { CODE: e.code, LANG: e.lang } };
       default:
@@ -190,6 +203,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         return { type: 'error_throw', id, inputs: inputs([['VALUE', s.value, textShadow('Fehler')]]) };
       case 'dset':
         return { type: 'dict_set', id, inputs: inputs([['DICT', s.dict], ['KEY', s.key, textShadow('')], ['VALUE', s.value, numShadow(0)]]) };
+      case 'fset':
+        return { type: 'field_set', id, fields: { NAME: s.name }, inputs: inputs([['OBJ', s.obj], ['VALUE', s.value, numShadow(0)]]) };
       case 'for':
         return {
           type: 'controls_for',
@@ -263,6 +278,32 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
     const b = functionBlock(f);
     place(`fn:${f.name}`, b, estimateHeight(f.body) + 110);
     top.push(b);
+  }
+
+  for (const c of program.classes ?? []) {
+    const b = classBlock(c);
+    place(`cls:${c.name}`, b, c.fields.length * 48 + estimateHeight(c.ctor) + c.methods.reduce((h, m) => h + estimateHeight(m.body) + 90, 0) + 160);
+    top.push(b);
+  }
+
+  /** Class block: properties, "beim Erzeugen" and methods stacked inside. */
+  function classBlock(c: ClassDef): BlockState {
+    const members: BlockState[] = [];
+    for (const f of c.fields) members.push({ type: 'class_field', id: uid(), fields: { NAME: f.name }, inputs: inputs([['VALUE', f.value, numShadow(0)]]) });
+    if (c.ctorParams.length || c.ctor.length) {
+      c.ctorParams.forEach(varId);
+      members.push({ type: 'class_ctor', id: uid(), fields: { PARAMS: c.ctorParams.join(', ') }, inputs: body('DO', c.ctor) });
+    }
+    for (const m of c.methods) {
+      m.params.forEach(varId);
+      const mb: BlockState = { type: 'class_method', id: m.id ?? uid(), fields: { NAME: m.name, PARAMS: m.params.join(', ') }, inputs: body('DO', m.body) };
+      if (m.comment) mb.icons = { comment: { text: m.comment, pinned: false, height: 80, width: 220 } };
+      members.push(mb);
+    }
+    for (let i = 0; i < members.length - 1; i++) members[i].next = { block: members[i + 1] };
+    const b: BlockState = { type: 'class_def', id: c.id ?? uid(), fields: { NAME: c.name }, inputs: members.length ? { BODY: { block: members[0] } } : {} };
+    if (c.comment) b.icons = { comment: { text: c.comment, pinned: false, height: 80, width: 220 } };
+    return b;
   }
 
   function functionBlock(f: FunctionDef): BlockState {
@@ -413,6 +454,10 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
       }
       case 'dict_get':
         return withId({ k: 'dget', dict: e(inp(b, 'DICT')), key: e(inp(b, 'KEY')) });
+      case 'self_obj':
+        return withId({ k: 'self' });
+      case 'obj_new':
+        return withId({ k: 'new', cls: String(field(b, 'CLASS') ?? 'Objekt'), args: argList(b, argCount(b)) });
       case 'code_expr':
         return withId({ k: 'raw', code: String(field(b, 'CODE') ?? ''), lang: (field(b, 'LANG') ?? 'python') as Lang });
       default:
@@ -483,6 +528,8 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return { k: 'methodstmt', obj: e(inp(b, 'OBJ')), name: field(b, 'NAME') ?? 'f', args: argList(b, argCount(b)) };
       case 'func_return':
         return { k: 'return', value: e(inp(b, 'VALUE')) };
+      case 'field_set':
+        return { k: 'fset', obj: e(inp(b, 'OBJ')), name: String(field(b, 'NAME') ?? 'wert'), value: e(inp(b, 'VALUE')) };
       case 'code_comment':
         return { k: 'comment', text: String(field(b, 'TEXT') ?? '') };
       case 'code_raw':
@@ -495,7 +542,41 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
   let main: Stmt[] | null = null;
   let mainId: string | undefined;
   const functions: FunctionDef[] = [];
+  const classes: ClassDef[] = [];
+  const paramList = (v: any): string[] =>
+    String(v ?? '')
+      .split(/[,;\s]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
   for (const b of ws.blocks?.blocks ?? []) {
+    if (b.type === 'class_def') {
+      if (b.enabled === false) continue;
+      const c: ClassDef = { id: b.id, name: String(field(b, 'NAME') ?? 'Klasse'), fields: [], ctorParams: [], ctor: [], methods: [] };
+      for (let m = b.inputs?.BODY?.block; m; m = m.next?.block) {
+        if (m.enabled === false) continue;
+        if (m.type === 'class_field') c.fields.push({ name: String(field(m, 'NAME') ?? 'wert'), value: e(inp(m, 'VALUE')) });
+        else if (m.type === 'class_ctor') {
+          c.ctorParams = paramList(field(m, 'PARAMS'));
+          c.ctor = stmts(m.inputs?.DO?.block);
+        } else if (m.type === 'class_method') {
+          const body = stmts(m.inputs?.DO?.block);
+          const comment = m.icons?.comment?.text;
+          c.methods.push({
+            id: m.id,
+            name: String(field(m, 'NAME') ?? 'methode'),
+            params: paramList(field(m, 'PARAMS')),
+            body,
+            returns: hasValueReturn(body),
+            ...(comment ? { comment } : {}),
+          });
+        }
+      }
+      const comment = b.icons?.comment?.text;
+      if (comment) c.comment = comment;
+      classes.push(c);
+      layout[`cls:${c.name}`] = { x: b.x ?? 0, y: b.y ?? 0 };
+      continue;
+    }
     if (b.type === 'event_start' && main === null) {
       main = stmts(b.next?.block);
       mainId = b.id;
@@ -513,5 +594,5 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
       layout[`fn:${name}`] = { x: b.x ?? 0, y: b.y ?? 0 };
     }
   }
-  return { program: { main, mainId, functions }, layout };
+  return { program: { main, mainId, functions, ...(classes.length ? { classes } : {}) }, layout };
 }

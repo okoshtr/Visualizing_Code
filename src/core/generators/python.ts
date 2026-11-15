@@ -1,5 +1,6 @@
 import { MAIN } from '../analysis';
-import type { Ex, Expr, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, Stmt } from '../ir';
+import { CTOR, methodPlace } from '../ir';
 import { ATOM, BaseGen, type Code, type GenResult, foldPlus } from './base';
 
 // Python precedences
@@ -42,6 +43,7 @@ export class PythonGen extends BaseGen {
         }),
       ),
     );
+    const classLines = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     this.place = MAIN;
     const mainLines = this.capture(() => this.withId(this.program.mainId, () => this.body(this.program.main ?? [])));
 
@@ -53,11 +55,43 @@ export class PythonGen extends BaseGen {
       out.push(imp.alias === imp.module ? `import ${imp.module}` : `import ${imp.module} as ${imp.alias}`);
     }
     if (out.length) out.push('', '');
+    for (const c of classLines) out.push(...c, '', '');
     for (const f of fnLines) out.push(...f, '', '');
     out.push(...mainLines);
     // keep the turtle window open
     if (this.imports.has('turtle')) out.push('', 'turtle.done()');
     return this.result(out.join('\n'));
+  }
+
+  private emitClass(c: ClassDef) {
+    this.withId(c.id, () => {
+      if (c.comment) this.comment(c.comment);
+      this.emit(`class ${c.name}:`);
+      this.indented(() => {
+        let empty = true;
+        if (c.fields.length || c.ctorParams.length || c.ctor.length) {
+          empty = false;
+          this.place = methodPlace(c.name, CTOR);
+          this.emit(`def __init__(${['self', ...c.ctorParams.map((p) => this.id(p))].join(', ')}):`);
+          this.indented(() => {
+            for (const f of c.fields) this.emit(`self.${f.name} = ${this.sub(f.value, 0, { k: 'num', v: 0 })}`);
+            this.suite(c.ctor);
+          });
+        }
+        for (const m of c.methods) {
+          if (!empty) this.emit('');
+          empty = false;
+          this.place = methodPlace(c.name, m.name);
+          this.withId(m.id, () => {
+            if (m.comment) this.comment(m.comment);
+            this.emit(`def ${m.name}(${['self', ...m.params.map((p) => this.id(p))].join(', ')}):`);
+            this.indented(() => this.suite(m.body));
+          });
+        }
+        if (empty) this.emit('pass');
+      });
+    });
+    this.place = MAIN;
   }
 
   private suite(stmts: Stmt[]) {
@@ -127,6 +161,9 @@ export class PythonGen extends BaseGen {
         break;
       case 'dset':
         this.emit(`${this.sub(s.dict, ATOM)}[${this.sub(s.key)}] = ${this.sub(s.value)}`);
+        break;
+      case 'fset':
+        this.emit(`${this.sub(s.obj, ATOM)}.${s.name} = ${this.sub(s.value)}`);
         break;
       case 'for':
         this.emit(`for ${this.id(s.var)} in ${this.range(s.from, s.to, s.by)}:`);
@@ -279,6 +316,10 @@ export class PythonGen extends BaseGen {
         return [`{${e.entries.map((x) => `${this.sub(x.key)}: ${this.sub(x.value)}`).join(', ')}}`, ATOM];
       case 'dget':
         return [`${this.sub(e.dict, ATOM)}[${this.sub(e.key)}]`, ATOM];
+      case 'self':
+        return ['self', ATOM];
+      case 'new':
+        return [`${e.cls}(${this.args(e.args)})`, ATOM];
       case 'raw':
         return this.rawCode(e.code, e.lang);
       default:

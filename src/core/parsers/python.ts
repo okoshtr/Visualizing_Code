@@ -1,6 +1,6 @@
 // Python source -> IR
 
-import type { Ex, Expr, FunctionDef, ImportInfo, Program, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef, ImportInfo, Program, Stmt } from '../ir';
 import { assignedNames, walkAllExprs, walkStmts } from '../ir';
 import { ParseError, type ParseResult, type Token, caseCondition, errorVarToMessage, isIdentChar, isIdentStart, isTrailing, lineOf, mapTree, markGap, negate, rawStmt, unescape } from './common';
 import { foldPlus } from '../generators/base';
@@ -335,6 +335,7 @@ class PyParser {
         case 'def':
           return [this.defStmt()];
         case 'class':
+          return [this.classStmt()];
         case 'with':
         case 'async':
           throw new ParseError(`"${t.v}" hat noch keinen Block.`, t.s);
@@ -433,6 +434,11 @@ class PyParser {
     if (aug) {
       this.p++;
       const value = this.expr();
+      if (target?.k === 'member') {
+        // self.x += 1  ->  set property x to x + 1
+        const op = { '+=': 'ADD', '-=': 'SUB', '*=': 'MUL', '/=': 'DIV', '//=': 'IDIV', '%=': 'MOD', '**=': 'POW' }[aug] as any;
+        return [{ k: 'fset', obj: target.obj, name: target.name, value: { k: 'bin', op, a: target, b: value } }];
+      }
       if (target?.k !== 'var') throw new ParseError('Diese Zuweisung hat noch keinen Block.', this.toks[start].s);
       if (aug === '+=') return [{ k: 'change', name: target.name, by: value }];
       if (aug === '-=') return [{ k: 'change', name: target.name, by: negate(value) }];
@@ -531,6 +537,7 @@ class PyParser {
   assign(target: Ex, value: Ex): Stmt {
     if (target?.k === 'var') return { k: 'set', name: target.name, value };
     if (target?.k === 'index') return { k: 'listset', list: target.list, index: target.index, value };
+    if (target?.k === 'member') return { k: 'fset', obj: target.obj, name: target.name, value };
     throw new ParseError('Diese Zuweisung hat noch keinen Block.', this.tok.s);
   }
 
@@ -628,8 +635,75 @@ class PyParser {
     return { k: 'foreach', var: name, list: iter, body };
   }
 
+  /** class Name: properties (name = value) and methods (def m(self, ...)) */
+  classStmt(): Stmt {
+    if (this.nesting > 0) throw new ParseError('Klassen innerhalb von Blöcken haben noch keinen Block.', this.tok.s);
+    this.expectKw('class');
+    const name = this.name();
+    if (this.eat('(')) {
+      if (!this.is(')')) {
+        const base = this.expr();
+        if (!(base?.k === 'var' && base.name === 'object')) throw new ParseError('Vererbung hat noch keinen Block.', this.tok.s);
+      }
+      this.expect(')');
+    }
+    this.expect(':');
+    this.expect('', 'nl');
+    this.expect('', 'indent');
+    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [] };
+    let pending: string[] = [];
+    while (!this.is('', 'dedent') && this.cur() !== 'eof') {
+      if (this.cur() === 'nl') {
+        this.p++;
+        continue;
+      }
+      if (this.cur() === 'comment') {
+        pending.push(this.tok.v.replace(/^ /, ''));
+        this.p++;
+        continue;
+      }
+      if (this.isKw('def')) {
+        this.allowDef = true;
+        const m: any = this.defStmt();
+        const { name: mname, params } = JSON.parse(m.id);
+        if (params[0] !== 'self') throw new ParseError('Methoden ohne "self" haben noch keinen Block.', this.tok.s);
+        const body = selfToObject(m.body);
+        if (mname === '__init__') {
+          cls.ctorParams = params.slice(1);
+          cls.ctor = body;
+        } else {
+          cls.methods.push({ name: mname, params: params.slice(1), body, returns: hasReturnValue(body), ...(pending.length ? { comment: pending.join('\n') } : {}) });
+        }
+        pending = [];
+        continue;
+      }
+      if (this.cur() === 'str') {
+        // docstring
+        this.p++;
+        this.eat('', 'nl');
+        continue;
+      }
+      if (this.isKw('pass')) {
+        this.p++;
+        this.eat('', 'nl');
+        continue;
+      }
+      // class attribute "x = 0" -> property with a start value
+      const field = this.name();
+      this.expect('=');
+      cls.fields.push({ name: field, value: this.expr() });
+      this.eat('', 'nl');
+    }
+    this.eat('', 'dedent');
+    return { k: 'raw', code: '', lang: 'python', src: '__class__', ...({ cls } as any) };
+  }
+
+  allowDef = false;
+
   defStmt(): Stmt {
-    if (this.nesting > 0) throw new ParseError('Funktionen innerhalb von Blöcken haben noch keinen Block.', this.tok.s);
+    const allowed = this.allowDef;
+    this.allowDef = false;
+    if (this.nesting > 0 && !allowed) throw new ParseError('Funktionen innerhalb von Blöcken haben noch keinen Block.', this.tok.s);
     this.expectKw('def');
     const name = this.name();
     this.expect('(');
@@ -1009,6 +1083,11 @@ function mergeStrings(parts: Ex[]): Ex[] {
   return out;
 }
 
+/** Inside methods, "self" is the object itself. */
+function selfToObject(stmts: Stmt[]): Stmt[] {
+  return mapTree(stmts, (e) => (e.k === 'var' && e.name === 'self' ? { k: 'self' } : undefined));
+}
+
 function mentions(e: Ex, name: string): boolean {
   return JSON.stringify(e ?? null).includes(`"k":"var","name":${JSON.stringify(name)}`);
 }
@@ -1064,6 +1143,7 @@ export function parsePython(src: string): ParseResult {
   const parser = new PyParser(src, toks);
   const stmts = parser.parseFile();
   const functions: FunctionDef[] = [];
+  const classes: ClassDef[] = [];
   let main: Stmt[] = [];
   const meta: Program['meta'] = { locals: {} };
   let pending: string[] = [];
@@ -1077,6 +1157,13 @@ export function parsePython(src: string): ParseResult {
       continue;
     }
     if (s.k === 'raw' && s.src === '__drop__') continue;
+    if (s.k === 'raw' && s.src === '__class__') {
+      const cls: ClassDef = (s as any).cls;
+      if (pending.length) cls.comment = pending.join('\n');
+      pending = [];
+      classes.push(cls);
+      continue;
+    }
     if (s.k === 'raw' && s.src === '__def__') {
       const { name, params } = JSON.parse(s.id!);
       const body: Stmt[] = (s as any).body;
@@ -1102,7 +1189,7 @@ export function parsePython(src: string): ParseResult {
     functions.splice(functions.indexOf(mainFn), 1);
   }
   meta.imports = parser.imports;
-  const program: Program = { main, functions, meta };
+  const program: Program = { main, functions, meta, ...(classes.length ? { classes } : {}) };
   return normalize(program, 'python');
 }
 
