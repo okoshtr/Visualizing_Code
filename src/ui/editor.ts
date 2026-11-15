@@ -68,6 +68,10 @@ export class BlockEditor {
   private dom!: Record<string, HTMLElement>;
   /** Last state reported to the host (avoids reporting a change that is none). */
   private reported: string | null = null;
+  /** Which code lines / code belong to which block (from the last generation). */
+  private lineMap: Record<string, [number, number]> = {};
+  private exprMap: Record<string, string> = {};
+  private linkedBlock: string | null = null;
 
   constructor(
     public root: HTMLElement,
@@ -80,6 +84,7 @@ export class BlockEditor {
     this.injectBlockly();
     this.code = new CodeView(this.dom.cm, () => this.onCodeEdited());
     this.code.setLanguage(this.lang);
+    this.code.onCursorLine = (line) => this.showBlockForLine(line);
     this.updateLanguageUi();
   }
 
@@ -305,11 +310,74 @@ export class BlockEditor {
     this.ws.updateToolbox(TOOLBOX as any);
     this.ws.addChangeListener(Blockly.Events.disableOrphans);
     this.ws.addChangeListener((e: Blockly.Events.Abstract) => {
+      // (deselecting, e.g. by clicking into the code, keeps the marked lines)
+      if (e.type === Blockly.Events.SELECTED && (e as any).newElementId) this.showLinesForSelection(true);
       if (e.isUiEvent || this.suppressChange) return;
       if (e.type === Blockly.Events.FINISHED_LOADING) return;
       this.scheduleChange();
     });
     new ResizeObserver(() => Blockly.svgResize(this.ws)).observe(this.dom.blockly);
+  }
+
+  // ---- block <-> code -------------------------------------------------------------------
+
+  /** Nearest block (itself or a surrounding one) that produced code lines. */
+  private mappedBlock(b: Blockly.Block | null): Blockly.Block | null {
+    while (b && !this.lineMap[b.id]) b = b.getParent();
+    return b;
+  }
+
+  /** Marks the code lines of the selected block. */
+  private showLinesForSelection(scroll: boolean) {
+    if (this.codeDirty) return;
+    const selected = Blockly.getSelected() as Blockly.BlockSvg | null;
+    const b = selected && 'type' in selected && selected.workspace === this.ws ? this.mappedBlock(selected) : null;
+    this.code.showLinked(b ? this.lineMap[b.id] : null, scroll);
+  }
+
+  /** Cursor in the code: highlight the block that produced this line. */
+  private showBlockForLine(line: number) {
+    if (this.codeDirty || this.running) return;
+    let best: string | null = null;
+    let size = Infinity;
+    for (const [id, [from, to]] of Object.entries(this.lineMap)) {
+      if (line >= from && line <= to && to - from < size && this.ws.getBlockById(id)) {
+        best = id;
+        size = to - from;
+      }
+    }
+    if (this.linkedBlock && this.linkedBlock !== best) this.ws.highlightBlock(this.linkedBlock, false);
+    this.linkedBlock = best;
+    if (!best) return;
+    this.ws.highlightBlock(best, true);
+    const block = this.ws.getBlockById(best)!;
+    const view = this.ws.getMetricsManager().getViewMetrics(true);
+    const pos = block.getRelativeToSurfaceXY();
+    if (pos.y < view.top || pos.y > view.top + view.height - 40 || pos.x < view.left || pos.x > view.left + view.width - 40) this.ws.centerOnBlock(best);
+    this.code.showLinked(this.lineMap[best], false);
+  }
+
+  /** Tooltips show the code a block produces in the current language. */
+  private updateTooltips() {
+    const label = LANG_INFO[this.lang].label;
+    for (const b of this.ws.getAllBlocks(false)) {
+      const any = b as any;
+      if (any.__vcTip === undefined) any.__vcTip = b.tooltip ?? '';
+      b.setTooltip(() => {
+        const orig = typeof any.__vcTip === 'function' ? any.__vcTip() : any.__vcTip;
+        const code = this.codeOfBlock(b.id);
+        return code ? `${label}:  ${code}${orig ? '\n\n' + orig : ''}` : orig;
+      });
+    }
+  }
+
+  private codeOfBlock(id: string): string {
+    if (this.exprMap[id]) return this.exprMap[id];
+    const r = this.lineMap[id];
+    if (!r) return '';
+    const lines = this.lastCode.split('\n').slice(r[0] - 1, Math.min(r[1], r[0] + 2));
+    const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^\s*/)![0].length));
+    return lines.map((l) => l.slice(indent)).join('\n') + (r[1] > r[0] + 2 ? '\n…' : '');
   }
 
   isDark(): boolean {
@@ -336,8 +404,12 @@ export class BlockEditor {
     this.lastProgram = program;
     const res = generate(program, this.lang);
     this.lastCode = res.code;
+    this.lineMap = res.lines;
+    this.exprMap = res.exprs;
     if (!this.codeDirty) this.code.text = res.code;
     this.showNotes(res.warnings);
+    this.updateTooltips();
+    this.showLinesForSelection(false);
     const doc = this.document(state);
     const key = this.opts.mode === 'source' ? res.code : JSON.stringify({ l: doc.language, p: program.main, f: program.functions, b: doc.blocks });
     if (!notify) {

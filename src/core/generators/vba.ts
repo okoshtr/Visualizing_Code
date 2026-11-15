@@ -52,8 +52,8 @@ export class VbaGen extends BaseGen {
   // ---- program -----------------------------------------------------------------------
 
   generate(): GenResult {
-    const fns = this.program.functions.map((f) => this.capture(() => this.procedure(f)));
-    const main = this.capture(() => this.procedure(null));
+    const fns = this.program.functions.map((f) => this.capture(() => this.withId(f.id, () => this.procedure(f))));
+    const main = this.capture(() => this.withId(this.program.mainId, () => this.procedure(null)));
     const out = ['Option Explicit', ''];
     const globals = [...this.a.globals].sort();
     for (const g of globals) out.push(`Dim ${this.id(g)} As ${this.typeName(this.a.varType(g, MAIN))}`);

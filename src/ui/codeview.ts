@@ -1,7 +1,7 @@
 // Code panel based on CodeMirror 6.
 
-import { EditorState, Compartment, type Extension } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
+import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, type Extension } from '@codemirror/state';
+import { Decoration, type DecorationSet, EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { HighlightStyle, StreamLanguage, syntaxHighlighting, indentUnit, bracketMatching } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
@@ -23,9 +23,36 @@ const highlight = HighlightStyle.define([
   { tag: [t.meta, t.processingInstruction], color: 'var(--tok-com)' },
 ]);
 
+/** Lines that belong to the selected block. */
+const setLinked = StateEffect.define<[number, number] | null>();
+const linkedLine = Decoration.line({ class: 'cm-vc-linked' });
+const linkedField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setLinked)) continue;
+      if (!e.value) {
+        deco = Decoration.none;
+        continue;
+      }
+      const b = new RangeSetBuilder<Decoration>();
+      const [from, to] = e.value;
+      for (let l = from; l <= Math.min(to, tr.state.doc.lines); l++) {
+        const line = tr.state.doc.line(l);
+        b.add(line.from, line.from, linkedLine);
+      }
+      deco = b.finish();
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 const theme = EditorView.theme({
+  '.cm-vc-linked': { backgroundColor: 'var(--code-linked)', boxShadow: 'inset 3px 0 0 var(--accent)' },
   '&': { height: '100%', fontSize: '13px', backgroundColor: 'var(--code-bg)', color: 'var(--fg)' },
-  '.cm-scroller': { fontFamily: 'var(--font-code)', lineHeight: '1.55' },
+  '.cm-scroller': { fontFamily: 'var(--font-code)', lineHeight: '1.55', fontVariantLigatures: 'none' },
   '.cm-gutters': { backgroundColor: 'var(--code-bg)', color: 'var(--muted)', border: 'none' },
   '.cm-activeLine': { backgroundColor: 'var(--code-active)' },
   '.cm-activeLineGutter': { backgroundColor: 'var(--code-active)' },
@@ -56,6 +83,8 @@ export class CodeView {
   private lang = new Compartment();
   private indent = new Compartment();
   private settingText = false;
+  /** Called when the user puts the cursor on a line (1-based). */
+  onCursorLine: ((line: number) => void) | null = null;
 
   constructor(
     parent: HTMLElement,
@@ -78,8 +107,12 @@ export class CodeView {
           this.indent.of(indentUnit.of('    ')),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ 'aria-label': 'Programmcode', spellcheck: 'false' }),
+          linkedField,
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !this.settingText) this.onUserEdit(u.state.doc.toString());
+            if (u.selectionSet && !u.docChanged && u.transactions.some((t) => t.isUserEvent('select'))) {
+              this.onCursorLine?.(u.state.doc.lineAt(u.state.selection.main.head).number);
+            }
           }),
         ],
       }),
@@ -90,6 +123,15 @@ export class CodeView {
     this.view.dispatch({
       effects: [this.lang.reconfigure(language(lang)), this.indent.reconfigure(indentUnit.of(lang === 'javascript' ? '  ' : '    '))],
     });
+  }
+
+  /** Marks the lines from..to (1-based) and scrolls them into view; null removes the mark. */
+  showLinked(range: [number, number] | null, scroll = true) {
+    const effects: StateEffect<unknown>[] = [setLinked.of(range)];
+    if (range && scroll && range[0] <= this.view.state.doc.lines) {
+      effects.push(EditorView.scrollIntoView(this.view.state.doc.line(range[0]).from, { y: 'nearest', yMargin: 40 }));
+    }
+    this.view.dispatch({ effects });
   }
 
   get text(): string {

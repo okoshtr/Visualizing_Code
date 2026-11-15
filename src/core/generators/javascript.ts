@@ -141,7 +141,7 @@ export class JavaScriptGen extends CLikeGen {
 
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, '')));
     this.place = MAIN;
-    const mainLines = this.capture(() => this.functionBody(main));
+    const mainLines = this.capture(() => this.withId(this.program.mainId, () => this.functionBody(main)));
     const globals = this.capture(() => {
       for (const g of [...this.a.globals].sort()) {
         if (this.mentionsInMain.has(g)) continue;

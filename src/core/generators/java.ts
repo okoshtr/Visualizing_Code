@@ -136,7 +136,7 @@ export class JavaGen extends CLikeGen {
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, 'static ')));
     this.place = MAIN;
     const main = this.capture(() =>
-      this.open('public static void main(String[] args)', () => this.functionBody(this.a.place(MAIN))),
+      this.withId(this.program.mainId, () => this.open('public static void main(String[] args)', () => this.functionBody(this.a.place(MAIN)))),
     );
     const fields = this.capture(() => {
       if (this.usesInput) this.emit('static Scanner scanner = new Scanner(System.in);');

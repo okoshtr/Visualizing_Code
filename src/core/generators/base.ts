@@ -12,7 +12,16 @@ export interface GenOptions {
 export interface GenResult {
   code: string;
   warnings: string[];
+  /** Block id -> [first line, last line] (1-based) of the code it produced. */
+  lines: Record<string, [number, number]>;
+  /** Block id of an expression block -> its code. */
+  exprs: Record<string, string>;
 }
+
+// Invisible markers that tag generated lines with the id of their block; removed in result().
+const MARK_START = '\u0001';
+const MARK_END = '\u0002';
+const MARK = /\u0001([^\u0002]*)\u0002/g;
 
 /** Precedence of an atom / postfix expression. */
 export const ATOM = 20;
@@ -57,7 +66,25 @@ export abstract class BaseGen {
   // ---- output ---------------------------------------------------------------
 
   protected emit(text: string) {
-    for (const line of text.split('\n')) this.lines.push(line === '' ? '' : this.indentUnit.repeat(this.depth) + line);
+    const id = this.idStack[this.idStack.length - 1];
+    const mark = id ? MARK_START + id + MARK_END : '';
+    for (const line of text.split('\n')) this.lines.push(line === '' ? '' : mark + this.indentUnit.repeat(this.depth) + line);
+  }
+
+  private idStack: string[] = [];
+  private parentOf = new Map<string, string | undefined>();
+  private exprCode = new Map<string, string>();
+
+  /** Lines emitted inside fn belong to the block with this id. */
+  protected withId(id: string | undefined, fn: () => void) {
+    if (!id) return fn();
+    this.parentOf.set(id, this.idStack[this.idStack.length - 1]);
+    this.idStack.push(id);
+    try {
+      fn();
+    } finally {
+      this.idStack.pop();
+    }
   }
 
   protected blank() {
@@ -220,6 +247,7 @@ export abstract class BaseGen {
       if (e.b?.k === 'bin' && e.b.op === 'MOD' && e.a?.k === 'num' && e.a.v === 0) this.zeroCompared.add(e.b);
     }
     const [code, prec] = this.expr(e);
+    if (e.id) this.exprCode.set(e.id, code);
     return prec < minPrec ? `(${code})` : code;
   }
 
@@ -326,7 +354,32 @@ export abstract class BaseGen {
   protected result(code: string): GenResult {
     for (const w of this.a.warnings) this.warnings.add(w);
     if (!this.program.main) this.warnings.add('Es gibt keinen Block "Wenn Programm startet" - das Hauptprogramm ist leer.');
-    return { code: code.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n', warnings: [...this.warnings] };
+    const marked = code.replace(/\n{3,}/g, '\n\n').trimEnd().split('\n');
+    const own = new Map<string, [number, number]>();
+    const clean = marked.map((line, i) => {
+      let id: string | null = null;
+      const text = line.replace(MARK, (_m, x: string) => {
+        id ??= x;
+        return '';
+      });
+      if (id) {
+        const r = own.get(id);
+        own.set(id, r ? [Math.min(r[0], i + 1), Math.max(r[1], i + 1)] : [i + 1, i + 1]);
+      }
+      return text;
+    });
+    // a block covers its own lines and the lines of the blocks inside it
+    const lines: Record<string, [number, number]> = {};
+    for (const [id, r] of own) {
+      let cur: string | undefined = id;
+      while (cur) {
+        const old: [number, number] | undefined = lines[cur];
+        lines[cur] = old ? [Math.min(old[0], r[0]), Math.max(old[1], r[1])] : [r[0], r[1]];
+        cur = this.parentOf.get(cur);
+      }
+    }
+    // blank lines are not part of a block
+    return { code: clean.join('\n') + '\n', warnings: [...this.warnings], lines, exprs: Object.fromEntries(this.exprCode) };
   }
 
   protected abstract stmt(s: Stmt): void;
@@ -337,7 +390,7 @@ export abstract class BaseGen {
       const multiline = !!s.trail && s.trail.includes('\n');
       if (multiline) this.comment(s.trail!);
       const before = this.lines.length;
-      this.stmt(s);
+      this.withId(s.id, () => this.stmt(s));
       if (s.trail && !multiline && this.lines.length > before) {
         this.lines[this.lines.length - 1] += `${this.lang === 'python' ? '  ' : ' '}${this.commentPrefix} ${s.trail}`;
       }

@@ -314,8 +314,10 @@ export abstract class CLikeGen extends BaseGen {
 
   protected emitFunction(f: FunctionDef, prefix: string) {
     this.place = f.name;
-    if (f.comment) this.comment(f.comment);
-    this.open(this.functionHead(f, prefix), () => this.functionBody(this.a.place(f.name)));
+    this.withId(f.id, () => {
+      if (f.comment) this.comment(f.comment);
+      this.open(this.functionHead(f, prefix), () => this.functionBody(this.a.place(f.name)));
+    });
     this.place = MAIN;
   }
 

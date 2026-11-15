@@ -158,12 +158,12 @@ export class CppGen extends CLikeGen {
     const protos = this.program.functions.length > 1 ? this.program.functions.map((f) => `${this.functionHead(f, '')};`) : [];
     this.place = MAIN;
     const main = this.capture(() =>
-      this.open('int main()', () => {
+      this.withId(this.program.mainId, () => this.open('int main()', () => {
         const body = this.capture(() => this.functionBody(this.a.place(MAIN)));
         if (this.usesRandom) this.emit('srand(time(0));');
         this.lines.push(...body);
         this.emit('return 0;');
-      }),
+      })),
     );
     const globals = this.capture(() => {
       for (const g of [...this.a.globals].sort()) {

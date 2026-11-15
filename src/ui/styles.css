@@ -17,6 +17,7 @@
   --code-bg: #fbfcfe;
   --code-active: rgba(47, 120, 200, 0.06);
   --code-sel: rgba(47, 120, 200, 0.22);
+  --code-linked: rgba(255, 179, 0, 0.16);
   --console-bg: #121722;
   --console-fg: #dde5f3;
   --console-muted: #8d9ab3;
@@ -52,6 +53,7 @@
     --code-bg: #141924;
     --code-active: rgba(90, 162, 238, 0.08);
     --code-sel: rgba(90, 162, 238, 0.3);
+    --code-linked: rgba(255, 196, 64, 0.14);
     --console-bg: #0b0e15;
     --tok-kw: #f28fc5;
     --tok-str: #8bd49c;
@@ -80,6 +82,7 @@
   --code-bg: #141924;
   --code-active: rgba(90, 162, 238, 0.08);
   --code-sel: rgba(90, 162, 238, 0.3);
+  --code-linked: rgba(255, 196, 64, 0.14);
   --console-bg: #0b0e15;
   --tok-kw: #f28fc5;
   --tok-str: #8bd49c;

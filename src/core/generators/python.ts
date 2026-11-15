@@ -29,19 +29,21 @@ export class PythonGen extends BaseGen {
 
   generate(): GenResult {
     const fnLines = this.program.functions.map((f) =>
-      this.capture(() => {
-        this.place = f.name;
-        if (f.comment) this.comment(f.comment);
-        this.emit(`def ${this.id(f.name)}(${f.params.map((p) => this.id(p)).join(', ')}):`);
-        this.indented(() => {
-          const globals = [...this.a.place(f.name).assignedGlobals].map((g) => this.id(g));
-          if (globals.length) this.emit(`global ${globals.join(', ')}`);
-          this.suite(f.body);
-        });
-      }),
+      this.capture(() =>
+        this.withId(f.id, () => {
+          this.place = f.name;
+          if (f.comment) this.comment(f.comment);
+          this.emit(`def ${this.id(f.name)}(${f.params.map((p) => this.id(p)).join(', ')}):`);
+          this.indented(() => {
+            const globals = [...this.a.place(f.name).assignedGlobals].map((g) => this.id(g));
+            if (globals.length) this.emit(`global ${globals.join(', ')}`);
+            this.suite(f.body);
+          });
+        }),
+      ),
     );
     this.place = MAIN;
-    const mainLines = this.capture(() => this.body(this.program.main ?? []));
+    const mainLines = this.capture(() => this.withId(this.program.mainId, () => this.body(this.program.main ?? [])));
 
     const out: string[] = [];
     const imports = [...this.imports].sort();

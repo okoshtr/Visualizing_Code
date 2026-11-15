@@ -107,7 +107,7 @@ export class CSharpGen extends CLikeGen {
     const fns = this.program.functions.map((f) => this.capture(() => this.emitFunction(f, 'static ')));
     this.place = MAIN;
     const main = this.capture(() =>
-      this.open('static void Main()', () => {
+      this.withId(this.program.mainId, () => this.open('static void Main()', () => {
         const body = this.capture(() => this.functionBody(this.a.place(MAIN)));
         // decimal point instead of the comma of the system language (also for double.Parse)
         if (/\bdouble\b|\d\.\d/.test([...body, ...fns.flat()].join('\n'))) {
@@ -115,7 +115,7 @@ export class CSharpGen extends CLikeGen {
           this.imports.add('System.Globalization');
         }
         this.lines.push(...body);
-      }),
+      })),
     );
     const fields = this.capture(() => {
       if (this.usesRandom) this.emit('static Random random = new Random();');
