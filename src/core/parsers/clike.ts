@@ -379,6 +379,12 @@ class CParser {
       }
       if (this.isName('namespace')) {
         this.p++;
+        if (this.helpers.has(this.tok.v)) {
+          // helper namespace written by the generator (e.g. turtle)
+          while (!this.is('{') && this.cur() !== 'eof') this.p++;
+          this.skipBalanced();
+          return;
+        }
         while (!this.is('{') && !this.is(';')) this.p++;
         if (this.eat(';')) return;
         this.expect('{');
@@ -485,6 +491,12 @@ class CParser {
     try {
       this.skipModifiers();
       if (this.isName('class') || this.isName('interface') || this.isName('enum') || this.isName('struct') || this.isName('record')) {
+        // helper classes written by the generator (e.g. Turtle) are skipped
+        if (this.helpers.has(this.peek().v)) {
+          while (!this.is('{') && this.cur() !== 'eof') this.p++;
+          this.skipBalanced();
+          return;
+        }
         this.fail('Weitere Klassen haben noch keinen Block.');
       }
       this.memberRest(start, out);
@@ -945,6 +957,13 @@ class CParser {
     do {
       if (this.is('{') || this.is('[')) this.fail('Destrukturierung hat noch keinen Block.');
       const name = this.name();
+      if (this.lang === 'javascript' && this.helpers.has(name) && this.is('=')) {
+        // helper object written by the generator (e.g. const turtle = { ... })
+        this.p++;
+        if (this.is('{')) this.skipBalanced();
+        else this.expr();
+        continue;
+      }
       let t = type;
       if (this.is('[') && this.peek().v === ']') {
         this.p += 2;

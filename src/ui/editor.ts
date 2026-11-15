@@ -6,7 +6,7 @@ import { type Layout, type WorkspaceState, fromBlockly, toBlockly } from '../cor
 import { EXAMPLES } from '../core/examples';
 import { generate } from '../core/generators';
 import { LANGS, LANG_INFO, type Lang, type Program, type ProgramMeta, walkAllExprs, walkStmts } from '../core/ir';
-import { RunError, runProgram } from '../core/interpreter';
+import { type Drawing, RunError, runProgram } from '../core/interpreter';
 import { isExternalLib } from '../core/library';
 import { parse } from '../core/parsers';
 import { TOOLBOX, externalLibs, installAll, makeTheme, registerExternal, registerFunctionCategory } from './blocks';
@@ -128,13 +128,17 @@ export class BlockEditor {
         </section>
         <section class="vc-console" aria-label="Konsole">
           <div class="vc-head">
-            <h2>Konsole</h2>
+            <div class="vc-tabs" role="tablist" aria-label="Ausgabe">
+              <button type="button" class="vc-tab is-active" role="tab" aria-selected="true" data-tab="out">Konsole</button>
+              <button type="button" class="vc-tab" role="tab" aria-selected="false" data-tab="draw">Zeichnung</button>
+            </div>
             <div class="vc-head-tools">
               <label class="vc-check" title="Führt das Programm langsam aus und zeigt den aktiven Block"><input type="checkbox" id="vc-slow"> Zeitlupe</label>
               <button type="button" class="vc-icon-btn" id="vc-clear" title="Konsole leeren">${ICONS.clear}<span class="vc-sr">Konsole leeren</span></button>
             </div>
           </div>
           <div class="vc-out" role="log" aria-live="polite"><span class="vc-hint">Klicke auf „Start“, um dein Programm auszuführen.</span></div>
+          <div class="vc-draw" hidden><canvas class="vc-canvas" aria-label="Zeichnung des Programms"></canvas><p class="vc-draw-hint">Mit den Blöcken der Bibliothek „Zeichnen“ malt dein Programm hier.</p></div>
           <form class="vc-input" hidden>
             <label for="vc-answer" class="vc-ask"></label>
             <div class="vc-input-row"><input id="vc-answer" autocomplete="off" spellcheck="false"><button type="submit" class="vc-btn vc-small vc-primary">Senden</button></div>
@@ -163,6 +167,9 @@ export class BlockEditor {
       ask: q('.vc-ask'),
       answer: q('#vc-answer'),
       slow: q('#vc-slow'),
+      draw: q('.vc-draw'),
+      canvas: q('.vc-canvas'),
+      drawHint: q('.vc-draw-hint'),
       dialog,
       file: q('.vc-file'),
     };
@@ -192,7 +199,13 @@ export class BlockEditor {
       this.dom.pending.hidden = true;
       this.code.text = this.lastCode;
     });
-    q('#vc-clear').addEventListener('click', () => (this.dom.out.innerHTML = ''));
+    q('#vc-clear').addEventListener('click', () => {
+      this.dom.out.innerHTML = '';
+      this.drawing = null;
+      this.renderDrawing();
+    });
+    for (const t of r.querySelectorAll<HTMLButtonElement>('.vc-tab')) t.addEventListener('click', () => this.showTab(t.dataset.tab as 'out' | 'draw'));
+    new ResizeObserver(() => this.renderDrawing()).observe(this.dom.draw);
     this.dom.input.addEventListener('submit', (e) => {
       e.preventDefault();
       const value = (this.dom.answer as HTMLInputElement).value;
@@ -380,6 +393,14 @@ export class BlockEditor {
     return lines.map((l) => l.slice(indent)).join('\n') + (r[1] > r[0] + 2 ? '\n…' : '');
   }
 
+  /** Shows the top left of the program. */
+  scrollToStart() {
+    const box = this.ws.getBlocksBoundingBox();
+    if (!isFinite(box.left)) return;
+    const s = this.ws.scale;
+    this.ws.scroll(24 - box.left * s, 24 - box.top * s);
+  }
+
   isDark(): boolean {
     const t = document.documentElement.getAttribute('data-theme');
     if (t) return t === 'dark';
@@ -458,7 +479,7 @@ export class BlockEditor {
     this.dom.pending.hidden = true;
     this.updateLanguageUi();
     this.refresh(false);
-    this.ws.scrollCenter();
+    this.scrollToStart();
   }
 
   /** Loads a program (e.g. parsed from code); keeps the position of known blocks. */
@@ -543,7 +564,7 @@ export class BlockEditor {
     if (!ex) return;
     if (this.ws.getAllBlocks(false).length > 1 && !(await this.confirm(`Beispiel „${ex.title}“ laden? Deine aktuellen Blöcke werden ersetzt.`))) return;
     this.loadProgram(structuredClone(ex.program), false);
-    this.ws.scrollCenter();
+    this.scrollToStart();
   }
 
   newProgram() {
@@ -623,6 +644,9 @@ export class BlockEditor {
     this.stopRequested = false;
     this.setRunUi(true);
     this.dom.out.innerHTML = '';
+    this.drawing = null;
+    this.renderDrawing();
+    let switched = false;
     const slow = (this.dom.slow as HTMLInputElement).checked;
     let lastHighlighted: string | null = null;
     try {
@@ -647,6 +671,14 @@ export class BlockEditor {
               }
             : undefined,
           shouldStop: () => this.stopRequested,
+          draw: (d) => {
+            this.drawing = d;
+            if (!switched) {
+              switched = true;
+              this.showTab('draw');
+            }
+            this.scheduleDraw();
+          },
         },
         this.lang,
       );
@@ -674,6 +706,74 @@ export class BlockEditor {
       this.setRunUi(false);
       if (lastHighlighted) this.ws.highlightBlock(null);
     }
+  }
+
+  // ---- drawing -------------------------------------------------------------------------
+
+  private drawing: Drawing | null = null;
+  private drawPending = false;
+
+  showTab(tab: 'out' | 'draw') {
+    for (const t of this.root.querySelectorAll<HTMLButtonElement>('.vc-tab')) {
+      const active = t.dataset.tab === tab;
+      t.classList.toggle('is-active', active);
+      t.setAttribute('aria-selected', String(active));
+    }
+    this.dom.out.hidden = tab !== 'out';
+    this.dom.draw.hidden = tab !== 'draw';
+    if (tab === 'draw') this.renderDrawing();
+  }
+
+  private scheduleDraw() {
+    if (this.drawPending) return;
+    this.drawPending = true;
+    requestAnimationFrame(() => {
+      this.drawPending = false;
+      this.renderDrawing();
+    });
+  }
+
+  /** Draws the turtle drawing: 600 x 600 units, (0, 0) in the centre, y pointing up. */
+  private renderDrawing() {
+    const canvas = this.dom.canvas as HTMLCanvasElement;
+    const box = this.dom.draw.getBoundingClientRect();
+    const size = Math.max(50, Math.min(box.width, box.height) - 16);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = canvas.style.height = `${size}px`;
+    canvas.width = canvas.height = Math.round(size * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    const d = this.drawing;
+    this.dom.drawHint.hidden = !!d;
+    if (!d) return;
+    const scale = size / 600;
+    ctx.translate(size / 2, size / 2);
+    ctx.scale(scale, -scale);
+    ctx.lineCap = 'round';
+    for (const l of d.lines) {
+      ctx.strokeStyle = l.color;
+      ctx.lineWidth = l.width;
+      ctx.beginPath();
+      ctx.moveTo(l.x1, l.y1);
+      ctx.lineTo(l.x2, l.y2);
+      ctx.stroke();
+    }
+    // the turtle: a small arrow
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate((d.angle * Math.PI) / 180);
+    ctx.fillStyle = '#2FAE63';
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-6, 6);
+    ctx.lineTo(-3, 0);
+    ctx.lineTo(-6, -6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   stop() {

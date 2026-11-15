@@ -912,6 +912,8 @@ export const TOOLBOX = {
         libBlock('list', 'removeAt', true),
         libBlock('random', 'choice', false),
         libBlock('time', 'sleep', true),
+        libBlock('draw', 'forward', true),
+        libBlock('draw', 'right', true),
         libBlock('list', 'sum', false),
         libBlock('file', 'read', false),
         libBlock('file', 'appendLine', true),

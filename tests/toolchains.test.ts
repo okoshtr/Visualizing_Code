@@ -97,7 +97,9 @@ const NUMBER_PROGRAMS: { id: string; program: Program }[] = [
 describe('generated code runs with the real toolchain', () => {
   for (const ex of [...EXAMPLES.filter((e) => e.id !== 'zahlenraten'), ...NUMBER_PROGRAMS.map((p) => ({ ...p, input: [] as string[] }))]) {
     for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
-      it.skipIf(!runner.available)(`${ex.id} / ${lang}`, async () => {
+      // Python's turtle needs a window (tkinter); the drawing is checked in the other languages
+      const draws = JSON.stringify(ex.program).includes('"lib":"draw"');
+      it.skipIf(!runner.available || (draws && lang === 'python'))(`${ex.id} / ${lang}`, async () => {
         const input = (ex.input ?? []).join('\n') + '\n';
         const expected = await runToText(ex.program, lang, ex.input);
         const actual = runner.run(generate(ex.program, lang).code, input);

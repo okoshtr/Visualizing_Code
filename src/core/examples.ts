@@ -149,6 +149,30 @@ export const EXAMPLES: Example[] = [
     },
   },
   {
+    id: 'spirale',
+    title: 'Bunte Spirale (Zeichnen)',
+    description: 'Bibliothek „Zeichnen“: vorwärts gehen und drehen',
+    program: {
+      functions: [],
+      main: [
+        set('farben', { k: 'list', items: ['red', 'orange', 'gold', 'green', 'blue', 'purple'].map(s) }),
+        { k: 'libstmt', lib: 'draw', fn: 'pensize', args: [n(2)] },
+        {
+          k: 'for',
+          var: 'i',
+          from: n(1),
+          to: n(72),
+          by: n(1),
+          body: [
+            { k: 'libstmt', lib: 'draw', fn: 'pencolor', args: [{ k: 'index', list: v('farben'), index: bin('MOD', v('i'), n(6)) }] },
+            { k: 'libstmt', lib: 'draw', fn: 'forward', args: [bin('MUL', v('i'), n(4))] },
+            { k: 'libstmt', lib: 'draw', fn: 'right', args: [n(61)] },
+          ],
+        },
+      ],
+    },
+  },
+  {
     id: 'zahlenraten',
     title: 'Zahlenraten',
     description: 'Zufallszahl, Schleife und Eingabe',

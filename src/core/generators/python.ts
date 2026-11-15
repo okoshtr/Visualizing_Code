@@ -55,6 +55,8 @@ export class PythonGen extends BaseGen {
     if (out.length) out.push('', '');
     for (const f of fnLines) out.push(...f, '', '');
     out.push(...mainLines);
+    // keep the turtle window open
+    if (this.imports.has('turtle')) out.push('', 'turtle.done()');
     return this.result(out.join('\n'));
   }
 

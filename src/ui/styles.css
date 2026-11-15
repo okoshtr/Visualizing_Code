@@ -490,6 +490,49 @@ body {
   content: " …";
 }
 
+/* ---- console tabs & drawing ---- */
+.vc-tabs {
+  display: flex;
+  gap: 4px;
+}
+.vc-tab {
+  border: 0;
+  background: transparent;
+  color: var(--console-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.vc-tab.is-active {
+  color: var(--console-fg);
+  background: rgba(255, 255, 255, 0.08);
+}
+.vc-draw {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  position: relative;
+  padding: 8px;
+}
+.vc-canvas {
+  border-radius: 8px;
+  max-width: 100%;
+}
+.vc-draw-hint {
+  position: absolute;
+  margin: 0;
+  padding: 0 24px;
+  text-align: center;
+  color: #6b7891;
+  font-size: 13px;
+}
+
 /* ---- dialog ---- */
 .vc-dialog {
   position: fixed;

@@ -2,7 +2,7 @@
 
 import type { Ex, Expr, FunctionDef, Program, Stmt, TypeName } from '../ir';
 import { walkStmts } from '../ir';
-import { helperNames } from '../library';
+import { helperNames, vbaHelperGlobals } from '../library';
 import { ParseError, type ParseResult, type Token, isTrailing, lineOf, markGap, negate, rawStmt } from './common';
 import { normalize } from './normalize';
 
@@ -134,6 +134,7 @@ class VbaParser {
   pendingComments: string[] = [];
   loops: LoopCtx[] = [];
   helpers = helperNames('vba');
+  helperGlobals = vbaHelperGlobals();
 
   constructor(
     public src: string,
@@ -263,6 +264,11 @@ class VbaParser {
     do {
       const nameTok = this.tok;
       const name = this.name();
+      if (this.scope === '' && this.helperGlobals.has(name.toLowerCase())) {
+        // variable of a helper (e.g. the drawing turtle): skip
+        if (this.eatKw('as')) this.name();
+        continue;
+      }
       if (this.is('(')) {
         // dynamic array "Dim a()" or fixed "Dim a(10)"
         this.p++;

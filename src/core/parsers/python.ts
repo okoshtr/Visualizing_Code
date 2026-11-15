@@ -403,7 +403,7 @@ class PyParser {
             let module = this.name();
             while (this.eat('.')) module += '.' + this.name();
             const alias = this.eatKw('as') ? this.name() : module;
-            if (!['math', 'random', 'time'].includes(module) || alias !== module) this.imports.push({ lang: 'python', module, alias });
+            if (!['math', 'random', 'time', 'turtle', 'pathlib'].includes(module) || alias !== module) this.imports.push({ lang: 'python', module, alias });
           } while (this.eat(','));
           return [];
         }
@@ -535,6 +535,10 @@ class PyParser {
   }
 
   exprStatement(e: Expr): Stmt {
+    // turtle.done() keeps the drawing window open; it is added again automatically
+    if (e.k === 'pcall' && e.callee.k === 'member' && e.callee.obj?.k === 'var' && e.callee.obj.name === 'turtle' && ['done', 'mainloop', 'exitonclick'].includes(e.callee.name)) {
+      return { k: 'raw', code: '', lang: 'python', src: '__drop__' };
+    }
     if (e.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'print') {
       const kw = e.kwargs ?? {};
       for (const k of Object.keys(kw)) if (k !== 'end' && k !== 'sep') throw new ParseError(`print(${k}=...) hat noch keinen Block.`, this.tok.s);
@@ -1072,6 +1076,7 @@ export function parsePython(src: string): ParseResult {
       pending.push(s.text);
       continue;
     }
+    if (s.k === 'raw' && s.src === '__drop__') continue;
     if (s.k === 'raw' && s.src === '__def__') {
       const { name, params } = JSON.parse(s.id!);
       const body: Stmt[] = (s as any).body;

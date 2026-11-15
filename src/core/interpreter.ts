@@ -13,6 +13,28 @@ export interface RunHost {
   shouldStop(): boolean;
   /** Files the program can read and write (default: kept in memory while the page is open). */
   files?: Map<string, string>;
+  /** Called whenever the drawing ("Zeichnen" library) changes. */
+  draw?(drawing: Drawing): void;
+}
+
+export interface DrawLine {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: string;
+  width: number;
+}
+
+/** State of the drawing turtle (0, 0 is the centre, y points up, angle 0 points right). */
+export interface Drawing {
+  lines: DrawLine[];
+  x: number;
+  y: number;
+  angle: number;
+  down: boolean;
+  color: string;
+  width: number;
 }
 
 /** Files of the built-in runner when the host does not provide its own. */
@@ -154,6 +176,50 @@ class Runner {
   /** Static type of an expression in the current function. */
   ty(e: Ex): Ty {
     return e ? this.a.typeOf(e, this.frame.place) : '';
+  }
+
+  drawing: Drawing = { lines: [], x: 0, y: 0, angle: 0, down: true, color: 'black', width: 1 };
+
+  turtle(op: string, a: any[]) {
+    const d = this.drawing;
+    const moveTo = (x: number, y: number) => {
+      if (d.down) d.lines.push({ x1: d.x, y1: d.y, x2: x, y2: y, color: d.color, width: d.width });
+      d.x = x;
+      d.y = y;
+    };
+    switch (op) {
+      case 'forward': {
+        const n = this.num(a[0]);
+        const r = (d.angle * Math.PI) / 180;
+        moveTo(d.x + n * Math.cos(r), d.y + n * Math.sin(r));
+        break;
+      }
+      case 'right':
+        d.angle -= this.num(a[0]);
+        break;
+      case 'left':
+        d.angle += this.num(a[0]);
+        break;
+      case 'penup':
+        d.down = false;
+        break;
+      case 'pendown':
+        d.down = true;
+        break;
+      case 'pencolor':
+        d.color = String(a[0]);
+        break;
+      case 'pensize':
+        d.width = this.num(a[0]);
+        break;
+      case 'goto':
+        moveTo(this.num(a[0]), this.num(a[1]));
+        break;
+      case 'clear':
+        d.lines = [];
+        break;
+    }
+    this.host.draw?.(d);
   }
 
   /** Messages of the errors caught by the surrounding "versuche" blocks. */
@@ -385,6 +451,7 @@ class Runner {
     for (const a of argExprs) args.push(await this.expr(a));
     return await def.run(args, {
       files: this.host.files ?? memoryFiles,
+      turtle: (op, a) => this.turtle(op, a),
       random: Math.random,
       sleep: async (sec) => {
         const end = Date.now() + Math.max(0, sec) * 1000;

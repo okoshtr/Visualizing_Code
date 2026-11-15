@@ -54,6 +54,8 @@ export interface LibRuntime {
   random(): number;
   sleep(seconds: number): Promise<void>;
   error(message: string): never;
+  /** Drawing ("Zeichnen" library). */
+  turtle(op: string, args: any[]): void;
 }
 
 export interface Library {
@@ -811,6 +813,43 @@ export const LIBRARIES: Library[] = [
     ],
   },
   {
+    id: 'draw',
+    label: 'Zeichnen',
+    fns: [
+      ...(
+        [
+          ['forward', 'gehe vorwärts', [{ name: 'Schritte', kind: 'number', def: 100 }], 'forward', 'Forward', 'TurtleForward'],
+          ['right', 'drehe rechts um', [{ name: 'Grad', kind: 'number', def: 90 }], 'right', 'Right', 'TurtleRight'],
+          ['left', 'drehe links um', [{ name: 'Grad', kind: 'number', def: 90 }], 'left', 'Left', 'TurtleLeft'],
+          ['penup', 'Stift hoch', [], 'penUp', 'PenUp', 'TurtlePenUp'],
+          ['pendown', 'Stift runter', [], 'penDown', 'PenDown', 'TurtlePenDown'],
+          ['pencolor', 'Stiftfarbe', [{ name: 'Farbe', kind: 'text', def: 'blue' }], 'penColor', 'PenColor', 'TurtleColor'],
+          ['pensize', 'Stiftdicke', [{ name: 'Dicke', kind: 'number', def: 3 }], 'penSize', 'PenSize', 'TurtleSize'],
+          ['goto', 'gehe zu', [{ name: 'x', kind: 'number', def: 0 }, { name: 'y', kind: 'number', def: 0 }], 'goTo', 'GoTo', 'TurtleGoTo'],
+          ['clear', 'lösche Zeichnung', [], 'clear', 'Clear', 'TurtleClear'],
+        ] as [string, string, LibParam[], string, string, string][]
+      ).map<LibFn>(([id, label, params, js, cs, vba]) => {
+        const args = params.map((_, i) => `{${i}}`).join(', ');
+        return {
+          id,
+          label,
+          params,
+          returns: null,
+          tooltip: 'Zeichnet wie eine Schildkröte mit Stift. Python nutzt das Modul "turtle", die anderen Sprachen speichern die Zeichnung als zeichnung.svg.',
+          impl: {
+            python: T(`turtle.${id}(${args})`, { imports: ['turtle'] }),
+            java: T(`Turtle.${js}(${args})`, { helpers: ['Turtle'] }),
+            javascript: T(`turtle.${js}(${args})`, { helpers: ['turtle'] }),
+            csharp: T(`Turtle.${cs}(${args})`, { helpers: ['Turtle'] }),
+            cpp: T(`turtle::${js}(${args})`, { helpers: ['turtle'] }),
+            vba: T(params.length ? `${vba} ${args}` : vba, { helpers: ['Turtle'] }),
+          },
+          run: (a, rt) => rt.turtle(id, a),
+        };
+      }),
+    ],
+  },
+  {
     id: 'time',
     label: 'Zeit',
     fns: [
@@ -870,6 +909,46 @@ export const externalModule = (lib: string) => lib.slice(4);
 
 export const HELPERS: Partial<Record<Lang, Record<string, { code: string; imports?: string[]; random?: boolean }>>> = {
   java: {
+    Turtle: {
+      code: `static class Turtle {
+    static double x = 0, y = 0, angle = 0, size = 1;
+    static boolean down = true;
+    static String color = "black";
+    static StringBuilder lines = new StringBuilder();
+
+    static void forward(double steps) {
+        goTo(x + steps * Math.cos(Math.toRadians(angle)), y + steps * Math.sin(Math.toRadians(angle)));
+    }
+
+    static void right(double degrees) { angle -= degrees; }
+    static void left(double degrees) { angle += degrees; }
+    static void penUp() { down = false; }
+    static void penDown() { down = true; }
+    static void penColor(String c) { color = c; }
+    static void penSize(double s) { size = s; }
+
+    static void goTo(double nx, double ny) {
+        if (down) lines.append(String.format(java.util.Locale.ROOT, "<line x1=\\"%.1f\\" y1=\\"%.1f\\" x2=\\"%.1f\\" y2=\\"%.1f\\" stroke=\\"%s\\" stroke-width=\\"%.1f\\" stroke-linecap=\\"round\\"/>%n", x, -y, nx, -ny, color, size));
+        x = nx;
+        y = ny;
+        save();
+    }
+
+    static void clear() {
+        lines.setLength(0);
+        save();
+    }
+
+    static void save() {
+        String svg = "<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"-300 -300 600 600\\" width=\\"600\\" height=\\"600\\">\\n<rect x=\\"-300\\" y=\\"-300\\" width=\\"600\\" height=\\"600\\" fill=\\"white\\"/>\\n" + lines + "</svg>\\n";
+        try {
+            java.nio.file.Files.writeString(java.nio.file.Path.of("zeichnung.svg"), svg);
+        } catch (java.io.IOException e) {
+            System.err.println("zeichnung.svg kann nicht geschrieben werden");
+        }
+    }
+}`,
+    },
     mapOf: {
       code: `@SuppressWarnings("unchecked")
 static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
@@ -919,6 +998,31 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   javascript: {
+    turtle: {
+      code: `const turtle = {
+  x: 0, y: 0, angle: 0, size: 1, down: true, color: "black", lines: [],
+  forward(steps) {
+    this.goTo(this.x + steps * Math.cos((this.angle * Math.PI) / 180), this.y + steps * Math.sin((this.angle * Math.PI) / 180));
+  },
+  right(degrees) { this.angle -= degrees; },
+  left(degrees) { this.angle += degrees; },
+  penUp() { this.down = false; },
+  penDown() { this.down = true; },
+  penColor(c) { this.color = c; },
+  penSize(s) { this.size = s; },
+  goTo(x, y) {
+    if (this.down) this.lines.push(\`<line x1="\${this.x}" y1="\${-this.y}" x2="\${x}" y2="\${-y}" stroke="\${this.color}" stroke-width="\${this.size}" stroke-linecap="round"/>\`);
+    this.x = x;
+    this.y = y;
+    this.save();
+  },
+  clear() { this.lines = []; this.save(); },
+  save() {
+    const svg = \`<svg xmlns="http://www.w3.org/2000/svg" viewBox="-300 -300 600 600" width="600" height="600">\\n<rect x="-300" y="-300" width="600" height="600" fill="white"/>\\n\${this.lines.join("\\n")}\\n</svg>\\n\`;
+    require("fs").writeFileSync("zeichnung.svg", svg);
+  },
+};`,
+    },
     toInt: {
       code: `function toInt(text) {
   const n = Number(text);
@@ -956,6 +1060,47 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   csharp: {
+    Turtle: {
+      imports: ['System.IO', 'System.Globalization'],
+      code: `static class Turtle
+{
+    static double x = 0, y = 0, angle = 0, size = 1;
+    static bool down = true;
+    static string color = "black";
+    static readonly System.Text.StringBuilder lines = new System.Text.StringBuilder();
+
+    public static void Forward(double steps)
+    {
+        GoTo(x + steps * Math.Cos(angle * Math.PI / 180), y + steps * Math.Sin(angle * Math.PI / 180));
+    }
+
+    public static void Right(double degrees) { angle -= degrees; }
+    public static void Left(double degrees) { angle += degrees; }
+    public static void PenUp() { down = false; }
+    public static void PenDown() { down = true; }
+    public static void PenColor(string c) { color = c; }
+    public static void PenSize(double s) { size = s; }
+
+    public static void GoTo(double nx, double ny)
+    {
+        if (down) lines.Append(string.Format(CultureInfo.InvariantCulture, "<line x1=\\"{0:0.0}\\" y1=\\"{1:0.0}\\" x2=\\"{2:0.0}\\" y2=\\"{3:0.0}\\" stroke=\\"{4}\\" stroke-width=\\"{5:0.0}\\" stroke-linecap=\\"round\\"/>\\n", x, -y, nx, -ny, color, size));
+        x = nx;
+        y = ny;
+        Save();
+    }
+
+    public static void Clear()
+    {
+        lines.Clear();
+        Save();
+    }
+
+    static void Save()
+    {
+        File.WriteAllText("zeichnung.svg", "<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"-300 -300 600 600\\" width=\\"600\\" height=\\"600\\">\\n<rect x=\\"-300\\" y=\\"-300\\" width=\\"600\\" height=\\"600\\" fill=\\"white\\"/>\\n" + lines + "</svg>\\n");
+    }
+}`,
+    },
     Shuffle: {
       random: true,
       code: `static void Shuffle<T>(List<T> list)
@@ -969,6 +1114,37 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   cpp: {
+    turtle: {
+      imports: ['<cmath>', '<fstream>', '<sstream>'],
+      code: `namespace turtle {
+double x = 0, y = 0, angle = 0, size = 1;
+bool down = true;
+string color = "black";
+ostringstream lines;
+
+void save() {
+    ofstream file("zeichnung.svg");
+    file << "<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"-300 -300 600 600\\" width=\\"600\\" height=\\"600\\">\\n";
+    file << "<rect x=\\"-300\\" y=\\"-300\\" width=\\"600\\" height=\\"600\\" fill=\\"white\\"/>\\n" << lines.str() << "</svg>\\n";
+}
+
+void goTo(double nx, double ny) {
+    if (down) lines << "<line x1=\\"" << x << "\\" y1=\\"" << -y << "\\" x2=\\"" << nx << "\\" y2=\\"" << -ny << "\\" stroke=\\"" << color << "\\" stroke-width=\\"" << size << "\\" stroke-linecap=\\"round\\"/>\\n";
+    x = nx;
+    y = ny;
+    save();
+}
+
+void forward(double steps) { goTo(x + steps * cos(angle * M_PI / 180), y + steps * sin(angle * M_PI / 180)); }
+void right(double degrees) { angle -= degrees; }
+void left(double degrees) { angle += degrees; }
+void penUp() { down = false; }
+void penDown() { down = true; }
+void penColor(const string& c) { color = c; }
+void penSize(double s) { size = s; }
+void clear() { lines.str(""); save(); }
+}`,
+    },
     keysOf: {
       imports: ['<map>'],
       code: `template <typename K, typename V>
@@ -1111,6 +1287,65 @@ int indexOf(const vector<T>& items, const T& value) {
     },
   },
   vba: {
+    Turtle: {
+      code: `Dim turtleX As Double, turtleY As Double, turtleAngle As Double, turtleSize As Double
+Dim turtleUp As Boolean, turtleColor As String, turtleLines As String
+
+Sub TurtleGoTo(ByVal nx As Double, ByVal ny As Double)
+    If turtleSize = 0 Then turtleSize = 1
+    If turtleColor = "" Then turtleColor = "black"
+    If Not turtleUp Then
+        turtleLines = turtleLines & "<line x1=""" & Str(turtleX) & """ y1=""" & Str(-turtleY) & """ x2=""" & Str(nx) & """ y2=""" & Str(-ny) & """ stroke=""" & turtleColor & """ stroke-width=""" & Str(turtleSize) & """/>" & vbLf
+    End If
+    turtleX = nx
+    turtleY = ny
+    TurtleSave
+End Sub
+
+Sub TurtleForward(ByVal steps As Double)
+    Const PI As Double = 3.14159265358979
+    TurtleGoTo turtleX + steps * Cos(turtleAngle * PI / 180), turtleY + steps * Sin(turtleAngle * PI / 180)
+End Sub
+
+Sub TurtleRight(ByVal degrees As Double)
+    turtleAngle = turtleAngle - degrees
+End Sub
+
+Sub TurtleLeft(ByVal degrees As Double)
+    turtleAngle = turtleAngle + degrees
+End Sub
+
+Sub TurtlePenUp()
+    turtleUp = True
+End Sub
+
+Sub TurtlePenDown()
+    turtleUp = False
+End Sub
+
+Sub TurtleColor(ByVal c As String)
+    turtleColor = c
+End Sub
+
+Sub TurtleSize(ByVal s As Double)
+    turtleSize = s
+End Sub
+
+Sub TurtleClear()
+    turtleLines = ""
+    TurtleSave
+End Sub
+
+Sub TurtleSave()
+    Dim f As Integer
+    f = FreeFile
+    Open "zeichnung.svg" For Output As #f
+    Print #f, "<svg xmlns=""http://www.w3.org/2000/svg"" viewBox=""-300 -300 600 600"" width=""600"" height=""600"">"
+    Print #f, "<rect x=""-300"" y=""-300"" width=""600"" height=""600"" fill=""white""/>"
+    Print #f, turtleLines & "</svg>"
+    Close #f
+End Sub`,
+    },
     NewDict: {
       code: `Function NewDict(ParamArray pairs() As Variant) As Object
     Dim i As Long
@@ -1277,5 +1512,18 @@ End Sub`,
 export function helperNames(lang: Lang): Set<string> {
   const names = new Set(Object.keys(HELPERS[lang] ?? {}));
   names.add(lang === 'csharp' ? 'Input' : 'input');
+  if (lang === 'vba') {
+    // a VBA helper can contain several procedures (e.g. TurtleForward, TurtleRight, ...)
+    for (const h of Object.values(HELPERS.vba ?? {})) for (const m of h.code.matchAll(/^(?:Sub|Function)\s+(\w+)/gm)) names.add(m[1]);
+  }
+  return names;
+}
+
+/** Module-level variables of the VBA helpers (they are not part of the user's program). */
+export function vbaHelperGlobals(): Set<string> {
+  const names = new Set<string>();
+  for (const h of Object.values(HELPERS.vba ?? {})) {
+    for (const m of h.code.matchAll(/^Dim (.+)$/gm)) for (const part of m[1].split(',')) names.add(part.trim().split(/\s+/)[0].toLowerCase());
+  }
   return names;
 }
