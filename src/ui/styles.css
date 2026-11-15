@@ -1,0 +1,628 @@
+/* Layout: one-screen workbench. Top bar with language tabs; block workspace on the left,
+   code (top) and console (bottom) stacked in a resizable column on the right. */
+:root {
+  --bg: #e9edf5;
+  --panel: #ffffff;
+  --panel-2: #f4f6fb;
+  --line: #d6dce9;
+  --fg: #1d2436;
+  --muted: #5a6580;
+  --accent: #2f78c8;
+  --accent-fg: #ffffff;
+  --go: #1f9d55;
+  --go-hover: #188548;
+  --stop: #cf3f3f;
+  --note-bg: #fff3d1;
+  --note-fg: #6e4b00;
+  --code-bg: #fbfcfe;
+  --code-active: rgba(47, 120, 200, 0.06);
+  --code-sel: rgba(47, 120, 200, 0.22);
+  --console-bg: #121722;
+  --console-fg: #dde5f3;
+  --console-muted: #8d9ab3;
+  --console-err: #ff8b8b;
+  --console-warn: #ffd479;
+  --console-echo: #8fd3ff;
+  --tok-kw: #a3367a;
+  --tok-str: #1f7a3d;
+  --tok-num: #b5530b;
+  --tok-com: #7b859c;
+  --tok-fn: #2b63b5;
+  --tok-type: #7a4bc2;
+  --shadow: 0 1px 2px rgba(20, 30, 60, 0.08), 0 4px 14px rgba(20, 30, 60, 0.06);
+  --font-ui: "Nunito", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-code: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f131b;
+    --panel: #171c27;
+    --panel-2: #1d2330;
+    --line: #2a3243;
+    --fg: #e2e8f3;
+    --muted: #98a4bd;
+    --accent: #5aa2ee;
+    --accent-fg: #0c1320;
+    --go: #2fb868;
+    --go-hover: #3ccb77;
+    --stop: #e05d5d;
+    --note-bg: #3a2f13;
+    --note-fg: #f3d27c;
+    --code-bg: #141924;
+    --code-active: rgba(90, 162, 238, 0.08);
+    --code-sel: rgba(90, 162, 238, 0.3);
+    --console-bg: #0b0e15;
+    --tok-kw: #f28fc5;
+    --tok-str: #8bd49c;
+    --tok-num: #f5b36b;
+    --tok-com: #7d889f;
+    --tok-fn: #82b6ff;
+    --tok-type: #c4a3ff;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f131b;
+  --panel: #171c27;
+  --panel-2: #1d2330;
+  --line: #2a3243;
+  --fg: #e2e8f3;
+  --muted: #98a4bd;
+  --accent: #5aa2ee;
+  --accent-fg: #0c1320;
+  --go: #2fb868;
+  --go-hover: #3ccb77;
+  --stop: #e05d5d;
+  --note-bg: #3a2f13;
+  --note-fg: #f3d27c;
+  --code-bg: #141924;
+  --code-active: rgba(90, 162, 238, 0.08);
+  --code-sel: rgba(90, 162, 238, 0.3);
+  --console-bg: #0b0e15;
+  --tok-kw: #f28fc5;
+  --tok-str: #8bd49c;
+  --tok-num: #f5b36b;
+  --tok-com: #7d889f;
+  --tok-fn: #82b6ff;
+  --tok-type: #c4a3ff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+[hidden] {
+  display: none !important;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+}
+
+.vc-app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-ui);
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 14px;
+}
+.vc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---- top bar ---- */
+.vc-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-block: 8px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.vc-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.vc-logo {
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+.vc-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+  min-width: 0;
+}
+.vc-name {
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+.vc-file {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vc-file:empty {
+  display: none;
+}
+.vc-langs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow-x: auto;
+  max-width: 100%;
+  scrollbar-width: none;
+}
+.vc-lang {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vc-lang:hover:not(:disabled) {
+  color: var(--fg);
+}
+.vc-lang.is-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.vc-lang:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.vc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.vc-host-actions {
+  display: contents;
+}
+.vc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.vc-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.vc-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.vc-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.vc-btn.vc-go {
+  background: var(--go);
+  border-color: var(--go);
+  color: #fff;
+  padding-inline: 16px;
+}
+.vc-btn.vc-go:hover:not(:disabled) {
+  background: var(--go-hover);
+}
+.vc-btn.vc-stop:not(:disabled) {
+  background: var(--stop);
+  border-color: var(--stop);
+  color: #fff;
+}
+.vc-btn.vc-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.vc-btn.vc-small {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+.vc-select select {
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+:is(.vc-btn, .vc-lang, .vc-icon-btn, select, input, .vc-split):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- main layout ---- */
+.vc-main {
+  --side-width: min(36vw, 500px);
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6px var(--side-width);
+}
+.vc-blocks {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.vc-blockly {
+  position: absolute;
+  inset: 0;
+}
+.vc-split {
+  cursor: col-resize;
+  background: var(--line);
+  touch-action: none;
+}
+.vc-split:hover {
+  background: var(--accent);
+}
+.vc-side {
+  display: grid;
+  grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+}
+.vc-code,
+.vc-console {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.vc-console {
+  border-top: 1px solid var(--line);
+  background: var(--console-bg);
+  color: var(--console-fg);
+}
+.vc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px 7px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.vc-console .vc-head {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.vc-head h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.vc-console .vc-head h2 {
+  color: var(--console-muted);
+}
+.vc-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vc-icon-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.vc-icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+.vc-icon-btn:hover {
+  background: var(--code-active);
+}
+.vc-console .vc-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+[data-flash]::after {
+  content: attr(data-flash);
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  background: var(--fg);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  z-index: 3;
+}
+.vc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--console-muted);
+  cursor: pointer;
+}
+.vc-pending {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 12px 7px 16px;
+  background: var(--note-bg);
+  color: var(--note-fg);
+  font-size: 13px;
+  font-weight: 700;
+}
+.vc-pending span {
+  margin-right: auto;
+}
+.vc-pending .vc-btn:not(.vc-primary) {
+  background: transparent;
+  color: inherit;
+  border-color: currentColor;
+}
+.vc-cm {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.vc-cm .cm-editor {
+  height: 100%;
+}
+.vc-notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 30%;
+  overflow: auto;
+}
+.vc-notes li {
+  padding: 6px 16px;
+  font-size: 12.5px;
+  background: var(--note-bg);
+  color: var(--note-fg);
+  border-top: 1px solid var(--line);
+}
+.vc-out {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 16px;
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.vc-hint,
+.vc-info {
+  color: var(--console-muted);
+}
+.vc-err {
+  color: var(--console-err);
+  font-weight: 700;
+}
+.vc-warn {
+  color: var(--console-warn);
+}
+.vc-echo {
+  color: var(--console-echo);
+}
+.vc-input {
+  padding: 8px 12px 10px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.vc-ask {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--console-muted);
+  margin-bottom: 5px;
+}
+.vc-input-row {
+  display: flex;
+  gap: 8px;
+}
+.vc-input input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-code);
+  font-size: 13px;
+  color: var(--console-fg);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  padding: 6px 9px;
+}
+.is-running .vc-go span::after {
+  content: " …";
+}
+
+/* ---- dialog ---- */
+.vc-dialog {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 14, 24, 0.45);
+  z-index: 1000;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.vc-dialog-box {
+  width: min(420px, 100%);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vc-dialog-msg {
+  margin: 0;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.vc-dialog-input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.vc-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---- Blockly tweaks ---- */
+.vc-app .blocklyToolbox {
+  border-right: 1px solid var(--line);
+}
+.vc-app .blocklyTreeLabel,
+.vc-app .blocklyToolboxCategoryLabel {
+  font-family: var(--font-ui);
+  font-weight: 700;
+}
+.vc-app .blocklyFlyoutLabelText {
+  font-family: var(--font-ui);
+  fill: var(--muted);
+}
+
+/* ---- medium screens: icon-only secondary buttons ---- */
+@media (max-width: 1360px) {
+  .vc-host-actions .vc-btn span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .vc-host-actions .vc-btn {
+    padding-inline: 9px;
+  }
+}
+@media (max-width: 1100px) {
+  .vc-lang {
+    padding: 5px 9px;
+  }
+  .vc-name {
+    font-size: 15px;
+  }
+}
+
+/* ---- narrow screens: stack ---- */
+@media (max-width: 860px) {
+  .vc-app {
+    height: auto;
+    min-height: 100%;
+  }
+  .vc-main {
+    display: flex;
+    flex-direction: column;
+  }
+  .vc-blocks {
+    height: 62vh;
+    min-height: 360px;
+  }
+  .vc-split {
+    display: none;
+  }
+  .vc-side {
+    grid-template-rows: auto auto;
+  }
+  .vc-cm {
+    height: 300px;
+    flex: none;
+  }
+  .vc-out {
+    min-height: 160px;
+  }
+  .vc-bar {
+    gap: 8px;
+  }
+  .vc-langs {
+    order: 3;
+    width: 100%;
+  }
+  .vc-actions {
+    margin-left: auto;
+    gap: 6px;
+  }
+  .vc-select select {
+    max-width: 120px;
+  }
+  .vc-btn span {
+    white-space: nowrap;
+  }
+}
+@media (max-width: 700px) {
+  .vc-app .blocklyToolboxCategoryLabel,
+  .vc-app .blocklyTreeLabel {
+    display: none;
+  }
+  .vc-app .blocklyToolboxCategory,
+  .vc-app .blocklyTreeRow {
+    padding: 4px 6px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

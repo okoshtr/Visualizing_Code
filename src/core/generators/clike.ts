@@ -291,7 +291,9 @@ export abstract class CLikeGen extends BaseGen {
       const to = s.to ?? { k: 'num', v: 0 };
       const plus = foldPlus(to, positive ? 1 : -1);
       // Prefer "i < n" over "i <= n - 1".
-      const nicer = plus && (plus.k === 'num' || plus.k === 'var') && to.k !== 'var';
+      // "i < n" for loops from 0 and for "bis n - 1"; otherwise "i <= n"
+      const fromZero = s.from?.k === 'num' && s.from.v === 0;
+      const nicer = !!plus && (plus.k === 'var' || (plus.k === 'num' && fromZero));
       if (positive) cond = nicer ? `${v} < ${this.sub(plus, C.rel + 1)}` : `${v} <= ${this.sub(to, C.rel + 1)}`;
       else cond = `${v} >= ${this.sub(to, C.rel + 1)}`;
       if (step === 1) update = `${v}++`;

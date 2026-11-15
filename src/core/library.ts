@@ -80,7 +80,7 @@ export const LIBRARIES: Library[] = [
       ...(['sin', 'cos', 'tan'] as const).map<LibFn>((f) => ({
         id: f,
         label: { sin: 'Sinus', cos: 'Kosinus', tan: 'Tangens' }[f],
-        params: [{ name: 'Winkel (Bogenmaß)', kind: 'number', def: 1 }],
+        params: [{ name: 'Winkel', kind: 'number', def: 1 }],
         returns: 'double',
         tooltip: 'Winkel im Bogenmaß (π = 180°).',
         impl: {
@@ -541,7 +541,7 @@ export const LIBRARIES: Library[] = [
     fns: [
       {
         id: 'float',
-        label: 'Kommazahl zwischen 0 und 1',
+        label: 'Kommazahl 0 bis 1',
         params: [],
         returns: 'double',
         impl: {

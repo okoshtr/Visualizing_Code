@@ -1,0 +1,65 @@
+{
+  "name": "visualizing-code",
+  "displayName": "Visualizing Code – Blöcke statt Syntax",
+  "description": "Programmiere Python, Java, JavaScript, C#, C++ und VBA mit Scratch-ähnlichen Blöcken – und sieh jede Datei als Blöcke.",
+  "version": "0.1.0",
+  "publisher": "visualizing-code",
+  "license": "SEE LICENSE IN README.md",
+  "repository": { "type": "git", "url": "https://github.com/okoshtr/Visualizing_Code" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Education", "Visualization"],
+  "keywords": ["scratch", "blocks", "blockly", "python", "java", "education"],
+  "icon": "icon.png",
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "visualizingCode.blocks",
+        "displayName": "Visualizing Code (Blöcke)",
+        "selector": [{ "filenamePattern": "*.blocks" }],
+        "priority": "default"
+      },
+      {
+        "viewType": "visualizingCode.source",
+        "displayName": "Visualizing Code (als Blöcke anzeigen)",
+        "selector": [
+          { "filenamePattern": "*.py" },
+          { "filenamePattern": "*.java" },
+          { "filenamePattern": "*.js" },
+          { "filenamePattern": "*.cs" },
+          { "filenamePattern": "*.cpp" },
+          { "filenamePattern": "*.cc" },
+          { "filenamePattern": "*.bas" },
+          { "filenamePattern": "*.vba" }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      { "command": "visualizingCode.newProgram", "title": "Neues Block-Programm", "category": "Visualizing Code" },
+      { "command": "visualizingCode.openAsBlocks", "title": "Als Blöcke öffnen", "category": "Visualizing Code", "icon": "$(extensions)" },
+      { "command": "visualizingCode.convertToBlocksFile", "title": "In Block-Datei (.blocks) umwandeln", "category": "Visualizing Code" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "visualizingCode.openAsBlocks", "when": "resourceExtname =~ /^\\.(py|java|js|cs|cpp|cc|bas|vba)$/", "group": "navigation" }
+      ],
+      "explorer/context": [
+        { "command": "visualizingCode.openAsBlocks", "when": "resourceExtname =~ /^\\.(py|java|js|cs|cpp|cc|bas|vba)$/", "group": "navigation@9" },
+        { "command": "visualizingCode.convertToBlocksFile", "when": "resourceExtname =~ /^\\.(py|java|js|cs|cpp|cc|bas|vba)$/", "group": "navigation@10" }
+      ]
+    },
+    "configuration": {
+      "title": "Visualizing Code",
+      "properties": {
+        "visualizingCode.defaultLanguage": {
+          "type": "string",
+          "enum": ["python", "java", "javascript", "csharp", "cpp", "vba"],
+          "default": "python",
+          "description": "Sprache, in der neue Block-Programme den Code anzeigen."
+        }
+      }
+    }
+  }
+}
