@@ -36,21 +36,35 @@ function write(key: string, value: unknown) {
 const savedTheme = read<string>(THEME_KEY);
 if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
 
-function download(name: string, text: string) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+/** Saves a text file: in the browser as a download, on claude.ai through the viewer's save dialog. */
+async function saveFile(name: string, text: string) {
+  if (__ARTIFACT__) {
+    // claude.ai only hands over a few file types (e.g. .json, .txt)
+    const downloads = await (window as any).claude?.use?.('downloads');
+    if (!downloads) {
+      editor.writeConsole('Speichern ist in dieser Ansicht nicht möglich. Kopiere den Code mit dem Kopier-Knopf über dem Code.\n', 'warn');
+      return;
+    }
+    try {
+      await downloads.save({ filename: name, data: text });
+    } catch (err: any) {
+      if (err?.code !== 'declined') editor.writeConsole(`Die Datei konnte nicht gespeichert werden (${err?.code ?? err}).\n`, 'warn');
+    }
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
 }
 
 const fileInput = document.createElement('input');
 fileInput.type = 'file';
-fileInput.accept = '.blocks,.json,' + Object.values(LANG_INFO).flatMap((i) => i.extensions.map((e) => '.' + e)).join(',');
+fileInput.accept = '.blocks,.json,.txt,' + Object.values(LANG_INFO).flatMap((i) => i.extensions.map((e) => '.' + e)).join(',');
 fileInput.hidden = true;
 document.body.append(fileInput);
 
-const artifact = typeof __ARTIFACT__ !== 'undefined' && __ARTIFACT__;
 
 const editor: BlockEditor = new BlockEditor(document.getElementById('app')!, {
   mode: 'project',
@@ -60,22 +74,25 @@ const editor: BlockEditor = new BlockEditor(document.getElementById('app')!, {
   actions: [
     { id: 'new', label: 'Neu', title: 'Neues, leeres Programm', icon: ICON.new, onClick: () => newProgram() },
     { id: 'open', label: 'Öffnen', title: 'Blöcke-Datei oder Code-Datei (.py, .java, .js, .cs, .cpp, .bas) öffnen', icon: ICON.open, onClick: () => fileInput.click() },
-    ...(artifact
-      ? []
-      : [
-          { id: 'save', label: 'Speichern', title: 'Blöcke als .blocks-Datei speichern', icon: ICON.save, onClick: () => download('programm.blocks', JSON.stringify(editor.document(), null, 2)) },
-          {
-            id: 'export',
-            label: 'Code',
-            title: 'Code als Datei herunterladen',
-            icon: ICON.code,
-            onClick: () => {
-              const lang = editor.lang;
-              const name = lang === 'java' ? 'Main.java' : lang === 'csharp' ? 'Program.cs' : `programm.${LANG_INFO[lang].ext}`;
-              download(name, editor.generatedCode);
-            },
-          },
-        ]),
+    {
+      id: 'save',
+      label: 'Speichern',
+      title: __ARTIFACT__ ? 'Blöcke als .json-Datei speichern (lässt sich mit „Öffnen“ wieder laden)' : 'Blöcke als .blocks-Datei speichern',
+      icon: ICON.save,
+      onClick: () => saveFile(__ARTIFACT__ ? 'programm.blocks.json' : 'programm.blocks', JSON.stringify(editor.document(), null, 2)),
+    },
+    {
+      id: 'export',
+      label: 'Code',
+      title: __ARTIFACT__ ? 'Code als Textdatei speichern' : 'Code als Datei herunterladen',
+      icon: ICON.code,
+      onClick: () => {
+        const lang = editor.lang;
+        const name = lang === 'java' ? 'Main.java' : lang === 'csharp' ? 'Program.cs' : `programm.${LANG_INFO[lang].ext}`;
+        // claude.ai saves only known file types: Main.java -> Main.java.txt
+        saveFile(__ARTIFACT__ ? `${name}.txt` : name, editor.generatedCode);
+      },
+    },
     { id: 'theme', label: '', title: 'Hell / Dunkel umschalten', icon: ICON.theme, onClick: () => toggleTheme() },
   ],
 });
@@ -106,7 +123,8 @@ async function openFile(file: File) {
     }
     return;
   }
-  const lang = langFromFileName(file.name) as Lang | null;
+  // "Main.java.txt" (saved from claude.ai) is Java code
+  const lang = (langFromFileName(file.name) ?? langFromFileName(file.name.replace(/\.txt$/i, ''))) as Lang | null;
   if (!lang) {
     editor.writeConsole(`Unbekannter Dateityp: ${file.name}\n`, 'err');
     return;
