@@ -1,6 +1,7 @@
 // Scope analysis and type inference shared by the code generators and the runner.
 
 import {
+  childBodies,
   type Ex,
   type Expr,
   type FunctionDef,
@@ -18,9 +19,25 @@ export type Ty = string;
 export const MAIN = '';
 
 export const isList = (t: Ty) => t.startsWith('list<');
-export const elemOf = (t: Ty): Ty => (isList(t) ? t.slice(5, -1) : t === 'string' ? 'string' : '?');
+export const isDict = (t: Ty) => t.startsWith('dict<');
+/** Element type when iterating: list element, character of a text, key of a dictionary. */
+export const elemOf = (t: Ty): Ty => (isList(t) ? t.slice(5, -1) : isDict(t) ? dictParts(t)[0] : t === 'string' ? 'string' : '?');
 export const listOf = (t: Ty): Ty => `list<${t}>`;
+export const dictOf = (k: Ty, v: Ty): Ty => `dict<${k}|${v}>`;
 export const isNumeric = (t: Ty) => t === 'int' || t === 'double';
+
+/** dict<K|V> -> [K, V] */
+export function dictParts(t: Ty): [Ty, Ty] {
+  if (!isDict(t)) return ['?', '?'];
+  const inner = t.slice(5, -1);
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === '<') depth++;
+    else if (inner[i] === '>') depth--;
+    else if (inner[i] === '|' && depth === 0) return [inner.slice(0, i), inner.slice(i + 1)];
+  }
+  return ['?', '?'];
+}
 
 export function unify(a: Ty, b: Ty): Ty {
   if (a === b) return a;
@@ -28,6 +45,11 @@ export function unify(a: Ty, b: Ty): Ty {
   if (b === '?') return a;
   if (isNumeric(a) && isNumeric(b)) return 'double';
   if (isList(a) && isList(b)) return listOf(unify(elemOf(a), elemOf(b)));
+  if (isDict(a) && isDict(b)) {
+    const [ka, va] = dictParts(a);
+    const [kb, vb] = dictParts(b);
+    return dictOf(unify(ka, kb), unify(va, vb));
+  }
   return 'any';
 }
 
@@ -35,6 +57,10 @@ export function unify(a: Ty, b: Ty): Ty {
 export function resolveTy(t: Ty, def: Ty = 'int'): Ty {
   if (t === '?') return def;
   if (isList(t)) return listOf(resolveTy(elemOf(t), def));
+  if (isDict(t)) {
+    const [k, v] = dictParts(t);
+    return dictOf(resolveTy(k, 'string'), resolveTy(v, def));
+  }
   return t;
 }
 
@@ -116,11 +142,8 @@ function computeLoopOnly(body: Stmt[]): Set<string> {
         if (active.includes(s.var)) other.add(s.var);
         loopVars.add(s.var);
         visit(s.body, [...active, s.var]);
-      } else if (s.k === 'if') {
-        for (const b of s.branches) visit(b.body, active);
-        if (s.else) visit(s.else, active);
-      } else if (s.k === 'repeat' || s.k === 'while') {
-        visit(s.body, active);
+      } else {
+        for (const b of childBodies(s)) visit(b, active);
       }
     }
   };
@@ -278,8 +301,10 @@ export function analyze(program: Program): Analysis {
         for (const it of e.items) t = unify(t, typeOf(it, place));
         return listOf(t);
       }
-      case 'index':
-        return elemOf(typeOf(e.list, place));
+      case 'index': {
+        const lt = typeOf(e.list, place);
+        return isDict(lt) ? dictParts(lt)[1] : elemOf(lt);
+      }
       case 'call':
         return retTypes.get(e.name) ?? '?';
       case 'lib': {
@@ -291,10 +316,25 @@ export function analyze(program: Program): Analysis {
           return isNumeric(t) ? t : 'double';
         }
         if (fn.returns === 'elem') return elemOf(typeOf(e.args[0], place));
+        if (fn.returns === 'keys') return listOf(dictParts(typeOf(e.args[0], place))[0]);
+        if (fn.returns === 'values') return listOf(dictParts(typeOf(e.args[0], place))[1]);
         return fn.returns;
       }
       case 'cond':
         return unify(typeOf(e.a, place), typeOf(e.b, place));
+      case 'errmsg':
+        return 'string';
+      case 'dict': {
+        let k: Ty = '?';
+        let v: Ty = '?';
+        for (const x of e.entries) {
+          k = unify(k, typeOf(x.key, place));
+          v = unify(v, typeOf(x.value, place));
+        }
+        return dictOf(k, v);
+      }
+      case 'dget':
+        return dictParts(typeOf(e.dict, place))[1];
       default:
         return 'any';
     }
@@ -339,7 +379,7 @@ export function analyze(program: Program): Analysis {
         case 'lib': {
           const fn = isExternalLib(x.lib) ? undefined : findLibFn(x.lib, x.fn);
           fn?.params.forEach((p, i) =>
-            hintUsage(x.args[i], place, p.kind === 'number' ? 'int' : p.kind === 'text' ? 'string' : p.kind === 'list' ? 'list<?>' : '?'),
+            hintUsage(x.args[i], place, p.kind === 'number' ? 'int' : p.kind === 'text' ? 'string' : p.kind === 'list' ? 'list<?>' : p.kind === 'dict' ? 'dict<?|?>' : '?'),
           );
           break;
         }
@@ -371,8 +411,19 @@ export function analyze(program: Program): Analysis {
             break;
           case 'listadd':
           case 'listset':
-            if (s.list?.k === 'var') assign(s.list.name, p.name, listOf(typeOf(s.value, p.name)));
+            if (s.list?.k === 'var') {
+              // d["key"] = value on a dictionary (or with a text key) is a dictionary entry
+              const cur = rawVarType(s.list.name, p.name);
+              if (s.k === 'listset' && (isDict(cur) || typeOf(s.index, p.name) === 'string')) {
+                assign(s.list.name, p.name, dictOf(typeOf(s.index, p.name), typeOf(s.value, p.name)));
+                break;
+              }
+              assign(s.list.name, p.name, listOf(typeOf(s.value, p.name)));
+            }
             if (s.k === 'listset') hintUsage(s.index, p.name, 'int');
+            break;
+          case 'dset':
+            if (s.dict?.k === 'var') assign(s.dict.name, p.name, dictOf(typeOf(s.key, p.name), typeOf(s.value, p.name)));
             break;
           case 'callstmt': {
             const f = fnByName.get(s.name);

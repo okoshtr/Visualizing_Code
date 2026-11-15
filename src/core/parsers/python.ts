@@ -1,8 +1,8 @@
 // Python source -> IR
 
 import type { Ex, Expr, FunctionDef, ImportInfo, Program, Stmt } from '../ir';
-import { assignedNames, walkAllExprs } from '../ir';
-import { ParseError, type ParseResult, type Token, isIdentChar, isIdentStart, isTrailing, lineOf, markGap, negate, rawStmt, unescape } from './common';
+import { assignedNames, walkAllExprs, walkStmts } from '../ir';
+import { ParseError, type ParseResult, type Token, caseCondition, errorVarToMessage, isIdentChar, isIdentStart, isTrailing, lineOf, mapTree, markGap, negate, rawStmt, unescape } from './common';
 import { foldPlus } from '../generators/base';
 import { normalize } from './normalize';
 
@@ -314,19 +314,30 @@ class PyParser {
           this.p++;
           const cond = this.expr();
           const body = this.block();
+          // "while True: ... if not c: break" at the end is a loop that checks afterwards
+          const last = body[body.length - 1];
+          if (cond?.k === 'bool' && cond.v && last?.k === 'if' && last.branches.length === 1 && !last.else && last.branches[0].body.length === 1 && last.branches[0].body[0].k === 'break' && !containsContinue(body)) {
+            const c = last.branches[0].cond;
+            const rest = body.slice(0, -1);
+            if (c?.k === 'not') return [{ k: 'while', until: false, cond: c.a, body: rest, post: true }];
+            return [{ k: 'while', until: true, cond: c, body: rest, post: true }];
+          }
           if (cond?.k === 'not') return [{ k: 'while', until: true, cond: cond.a, body }];
           return [{ k: 'while', until: false, cond, body }];
         }
+        case 'try':
+          return [this.tryStmt()];
+        case 'match':
+          if (this.peek().t === 'name' || this.peek().t === 'num' || this.peek().t === 'str' || this.peek().v === '(') return this.matchStmt();
+          break;
         case 'for':
           return [this.forStmt()];
         case 'def':
           return [this.defStmt()];
         case 'class':
-        case 'try':
         case 'with':
-        case 'match':
         case 'async':
-          if (t.v !== 'match' || this.peek().t === 'name') throw new ParseError(`"${t.v}" hat noch keinen Block.`, t.s);
+          throw new ParseError(`"${t.v}" hat noch keinen Block.`, t.s);
       }
       if (t.v === '@') throw new ParseError('Dekoratoren haben noch keinen Block.', t.s);
     }
@@ -359,8 +370,22 @@ class PyParser {
           return [{ k: 'continue' }];
         case 'return': {
           this.p++;
-          const value = this.cur() === 'nl' || this.is(';') ? null : this.expr();
+          const value = this.cur() === 'nl' || this.is(';') ? null : this.exprList();
           return [{ k: 'return', value }];
+        }
+        case 'raise': {
+          this.p++;
+          if (this.cur() === 'nl') throw new ParseError('"raise" ohne Fehler hat noch keinen Block.', t.s);
+          const e = this.expr();
+          // raise ValueError("...") / raise Exception(msg)
+          if (e?.k === 'pcall' && e.args.length <= 1) return [{ k: 'throw', value: e.args[0] ?? { k: 'str', v: 'Fehler' } }];
+          return [{ k: 'throw', value: e }];
+        }
+        case 'del': {
+          this.p++;
+          const target = this.expr();
+          if (target?.k !== 'index') throw new ParseError('"del" hat hier noch keinen Block.', t.s);
+          return [{ k: 'pexpr', e: { k: 'pcall', callee: { k: 'member', obj: target.list!, name: 'pop' }, args: [target.index] } }];
         }
         case 'global':
         case 'nonlocal': {
@@ -383,17 +408,16 @@ class PyParser {
           return [];
         }
         case 'from':
-        case 'del':
-        case 'raise':
         case 'assert':
         case 'yield':
           throw new ParseError(`"${t.v}" hat noch keinen Block.`, t.s);
       }
     }
     const start = this.p;
-    const target = this.expr();
+    const target = this.exprList();
     if (this.is('=')) {
       this.p++;
+      if (target?.k === 'list' && target.src === '__tuple__') return this.multiAssign(target.items, this.exprList());
       // list comprehension -> loop
       const valueStart = this.p;
       if (target?.k === 'var' && this.is('[')) {
@@ -401,7 +425,7 @@ class PyParser {
         if (comp) return this.expandComprehension(target.name, comp);
         this.p = valueStart;
       }
-      const value = this.expr();
+      const value = this.exprList();
       if (this.is('=')) throw new ParseError('Mehrfachzuweisungen haben noch keinen Block.', this.tok.s);
       return [this.assign(target, value)];
     }
@@ -417,6 +441,91 @@ class PyParser {
     }
     if (!target) throw new ParseError('Ausdruck erwartet.', this.tok.s);
     return [this.exprStatement(target)];
+  }
+
+  /** Expression or bare tuple "a, b" (a tuple becomes a list). */
+  exprList(): Ex {
+    const first = this.expr();
+    if (!this.is(',')) return first;
+    const items: Ex[] = [first];
+    while (this.eat(',')) {
+      if (this.cur() === 'nl' || this.is('=') || this.is(')')) break;
+      items.push(this.expr());
+    }
+    return { k: 'list', items, src: '__tuple__' };
+  }
+
+  /** a, b = b, a + b  ->  assignments in an order that keeps the old values. */
+  multiAssign(targets: Ex[], value: Ex): Stmt[] {
+    const names = targets.map((t) => {
+      if (t?.k !== 'var') throw new ParseError('Diese Mehrfachzuweisung hat noch keinen Block.', this.tok.s);
+      return t.name;
+    });
+    const out: Stmt[] = [];
+    if (value?.k === 'list' && value.items.length === names.length) {
+      const values = [...value.items];
+      names.forEach((n, i) => {
+        // a later value needs the old value of this variable: keep it in a helper variable
+        if (values.slice(i + 1).some((v) => mentions(v, n))) {
+          const tmp = `${n}_alt`;
+          out.push({ k: 'set', name: tmp, value: { k: 'var', name: n } });
+          for (let j = i + 1; j < values.length; j++) values[j] = renameVar(values[j], n, tmp);
+        }
+      });
+      names.forEach((n, i) => out.push({ k: 'set', name: n, value: values[i] }));
+      return out;
+    }
+    const tmp = names.join('_');
+    out.push({ k: 'set', name: tmp, value });
+    names.forEach((n, i) => out.push({ k: 'set', name: n, value: { k: 'index', list: { k: 'var', name: tmp }, index: { k: 'num', v: i } } }));
+    return out;
+  }
+
+  tryStmt(): Stmt {
+    this.expectKw('try');
+    const body = this.block();
+    while (this.cur() === 'nl') this.p++;
+    this.expectKw('except');
+    let name = '';
+    if (!this.is(':')) {
+      this.expr(); // error type
+      if (this.eatKw('as')) name = this.name();
+    }
+    let handler = this.block();
+    while (this.cur() === 'nl') this.p++;
+    if (this.isKw('except') || this.isKw('else') || this.isKw('finally')) throw new ParseError('Mehrere except-, else- oder finally-Teile haben noch keinen Block.', this.tok.s);
+    handler = errorVarToMessage(handler, name, 'python');
+    return { k: 'try', body, handler };
+  }
+
+  /** match x: case 1: ... case 2 | 3: ... case _: ...  ->  if-chain */
+  matchStmt(): Stmt[] {
+    this.expectKw('match');
+    const subject = this.expr();
+    this.expect(':');
+    this.expect('', 'nl');
+    this.expect('', 'indent');
+    const branches: { cond: Ex; body: Stmt[] }[] = [];
+    let elseBody: Stmt[] | null = null;
+    while (!this.is('', 'dedent') && this.cur() !== 'eof') {
+      if (this.cur() === 'nl') {
+        this.p++;
+        continue;
+      }
+      this.expectKw('case');
+      if (this.isKw('_')) {
+        this.p++;
+        elseBody = this.block();
+        continue;
+      }
+      const values: Ex[] = [this.atom()];
+      while (this.eat('|')) values.push(this.atom());
+      if (this.isKw('if')) throw new ParseError('case mit "if" hat noch keinen Block.', this.tok.s);
+      branches.push({ cond: caseCondition(subject, values), body: this.block() });
+    }
+    this.eat('', 'dedent');
+    if (!branches.length) return elseBody ?? [];
+    return [{ k: 'if', branches, else: elseBody }];
   }
 
   assign(target: Ex, value: Ex): Stmt {
@@ -476,7 +585,24 @@ class PyParser {
     const start = this.toks[this.p].s;
     this.expectKw('for');
     const name = this.name();
-    if (this.is(',')) throw new ParseError('Schleifen über mehrere Variablen haben noch keinen Block.', start);
+    if (this.eat(',')) {
+      // for i, x in enumerate(list) / for k, v in d.items()
+      const second = this.name();
+      this.expectKw('in');
+      const iter = this.expr();
+      const body = this.block();
+      if (iter?.k === 'pcall' && iter.callee.k === 'var' && iter.callee.name === 'enumerate' && iter.args.length === 1) {
+        const list = iter.args[0];
+        const set: Stmt = { k: 'set', name: second, value: { k: 'index', list, index: { k: 'var', name } } };
+        return { k: 'for', var: name, from: { k: 'num', v: 0 }, to: foldPlus({ k: 'len', of: 'auto', a: list }, -1), by: { k: 'num', v: 1 }, body: [set, ...body] };
+      }
+      if (iter?.k === 'pcall' && iter.callee.k === 'member' && iter.callee.name === 'items' && !iter.args.length) {
+        const dict = iter.callee.obj;
+        const set: Stmt = { k: 'set', name: second, value: { k: 'dget', dict, key: { k: 'var', name } } };
+        return { k: 'foreach', var: name, list: dict, body: [set, ...body] };
+      }
+      throw new ParseError('Schleifen über mehrere Variablen haben noch keinen Block.', start);
+    }
     this.expectKw('in');
     const iter = this.expr();
     const body = this.block();
@@ -504,11 +630,12 @@ class PyParser {
     const name = this.name();
     this.expect('(');
     const params: string[] = [];
+    const defaults: Ex[] = [];
     while (!this.is(')')) {
       if (this.is('*') || this.is('**') || this.is('/')) throw new ParseError('*args / **kwargs haben noch keinen Block.', this.tok.s);
       params.push(this.name());
       if (this.eat(':')) this.expr(); // type annotation (ignored)
-      if (this.eat('=')) throw new ParseError('Standardwerte für Parameter haben noch keinen Block.', this.tok.s);
+      if (this.eat('=')) defaults[params.length - 1] = this.expr();
       if (!this.eat(',')) break;
     }
     this.expect(')');
@@ -518,7 +645,7 @@ class PyParser {
     const body = this.block();
     this.currentFn = savedFn;
     // marker statement; turned into a function by parsePython()
-    return { k: 'raw', code: '', lang: 'python', src: '__def__', id: JSON.stringify({ name, params }), ...({ body } as any) };
+    return { k: 'raw', code: '', lang: 'python', src: '__def__', id: JSON.stringify({ name, params }), ...({ body, defaults } as any) };
   }
 
   tryComprehension(): { expr: Ex; v: string; iter: Ex; cond: Ex } | null {
@@ -572,10 +699,8 @@ class PyParser {
       const b = this.expr();
       return this.mk({ k: 'cond', cond, a, b }, start);
     }
-    if (this.is(',') && this.parenDepthTuple) throw new ParseError('Tupel haben noch keinen Block.', this.tok.s);
     return a;
   }
-  parenDepthTuple = false;
 
   mk(e: Expr, start: number): Expr {
     if (e.k !== 'num' && e.k !== 'str' && e.k !== 'var' && e.k !== 'bool') e.src = this.srcFrom(start);
@@ -790,30 +915,50 @@ class PyParser {
     }
     if (this.is('(')) {
       this.p++;
-      if (this.is(')')) throw new ParseError('Tupel haben noch keinen Block.', t.s);
-      const saved = this.parenDepthTuple;
-      this.parenDepthTuple = true;
+      if (this.is(')')) {
+        this.p++;
+        return this.mk({ k: 'list', items: [] }, start);
+      }
       const e = this.expr();
-      this.parenDepthTuple = saved;
-      if (this.is(',')) throw new ParseError('Tupel haben noch keinen Block.', this.tok.s);
+      if (this.is(',')) {
+        // tuple -> list
+        const items: Ex[] = [e];
+        while (this.eat(',')) {
+          if (this.is(')')) break;
+          items.push(this.expr());
+        }
+        this.expect(')');
+        return this.mk({ k: 'list', items }, start);
+      }
       this.expect(')');
       return e;
     }
     if (this.is('[')) {
       this.p++;
       const items: Ex[] = [];
-      const saved = this.parenDepthTuple;
-      this.parenDepthTuple = false;
       while (!this.is(']')) {
         items.push(this.expr());
         if (this.isKw('for')) throw new ParseError('Listen-Abstraktionen haben hier noch keinen Block.', this.tok.s);
         if (!this.eat(',')) break;
       }
-      this.parenDepthTuple = saved;
       this.expect(']');
       return this.mk({ k: 'list', items }, start);
     }
-    if (this.is('{')) throw new ParseError('Dictionaries haben noch keinen Block.', t.s);
+    if (this.is('{')) {
+      this.p++;
+      const entries: { key: Ex; value: Ex }[] = [];
+      while (!this.is('}')) {
+        const key = this.expr();
+        if (!this.is(':')) throw new ParseError('Mengen (set) haben noch keinen Block.', this.tok.s);
+        this.p++;
+        const value = this.expr();
+        if (this.isKw('for')) throw new ParseError('Dictionary-Abstraktionen haben noch keinen Block.', this.tok.s);
+        entries.push({ key, value });
+        if (!this.eat(',')) break;
+      }
+      this.expect('}');
+      return this.mk({ k: 'dict', entries }, start);
+    }
     throw new ParseError(`Unerwartetes "${t.v || t.t}".`, t.s);
   }
 
@@ -860,6 +1005,32 @@ function mergeStrings(parts: Ex[]): Ex[] {
   return out;
 }
 
+function mentions(e: Ex, name: string): boolean {
+  return JSON.stringify(e ?? null).includes(`"k":"var","name":${JSON.stringify(name)}`);
+}
+
+function renameVar(e: Ex, from: string, to: string): Ex {
+  return mapTree(e, (x) => (x.k === 'var' && x.name === from ? { k: 'var', name: to } : undefined));
+}
+
+function containsContinue(body: Stmt[]): boolean {
+  let found = false;
+  const visit = (list: Stmt[]) =>
+    list.forEach((s) => {
+      if (s.k === 'continue') found = true;
+      if (s.k === 'if') {
+        s.branches.forEach((b) => visit(b.body));
+        if (s.else) visit(s.else);
+      }
+      if (s.k === 'try') {
+        visit(s.body);
+        visit(s.handler);
+      }
+    });
+  visit(body);
+  return found;
+}
+
 function usesName(body: Stmt[], name: string): boolean {
   let used = false;
   walkAllExprs(body, (e) => {
@@ -904,8 +1075,9 @@ export function parsePython(src: string): ParseResult {
     if (s.k === 'raw' && s.src === '__def__') {
       const { name, params } = JSON.parse(s.id!);
       const body: Stmt[] = (s as any).body;
+      const defaults: Ex[] = (s as any).defaults;
       const returns = hasReturnValue(body);
-      functions.push({ name, params, body, returns, ...(pending.length ? { comment: pending.join('\n') } : {}) });
+      functions.push({ name, params, body, returns, ...(pending.length ? { comment: pending.join('\n') } : {}), ...(defaults.length ? { defaults } : {}) });
       pending = [];
       const globals = parser.globalsDecl.get(name) ?? new Set();
       meta.locals![name] = [...assignedNames(body)].filter((n) => !globals.has(n) && !params.includes(n));
@@ -937,16 +1109,8 @@ function isMainGuard(s: Stmt): boolean {
 
 export function hasReturnValue(body: Stmt[]): boolean {
   let found = false;
-  const visit = (stmts: Stmt[]) => {
-    for (const s of stmts) {
-      if (s.k === 'return' && s.value) found = true;
-      if (s.k === 'if') {
-        s.branches.forEach((b) => visit(b.body));
-        if (s.else) visit(s.else);
-      }
-      if (s.k === 'repeat' || s.k === 'while' || s.k === 'for' || s.k === 'foreach') visit(s.body);
-    }
-  };
-  visit(body);
+  walkStmts(body, (s) => {
+    if (s.k === 'return' && s.value) found = true;
+  });
   return found;
 }

@@ -1,4 +1,4 @@
-import { MAIN, type Ty, elemOf, isList } from '../analysis';
+import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
 import type { Ex, Expr } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
@@ -9,6 +9,7 @@ export class CppGen extends CLikeGen {
 
   protected typeName(t: Ty, ctx: 'decl' | 'param' | 'ret' = 'decl'): string {
     if (isList(t)) return `vector<${this.typeName(elemOf(t), 'ret')}>${ctx === 'param' ? '&' : ''}`;
+    if (isDict(t)) return `map<${this.typeName(dictParts(t)[0], 'ret')}, ${this.typeName(dictParts(t)[1], 'ret')}>${ctx === 'param' ? '&' : ''}`;
     const basic = { int: 'int', double: 'double', string: 'string', bool: 'bool' }[t];
     if (basic) return basic;
     if (ctx === 'decl') return 'auto';
@@ -17,7 +18,7 @@ export class CppGen extends CLikeGen {
   }
 
   protected defaultValue(t: Ty): string | null {
-    if (isList(t)) return null;
+    if (isList(t) || isDict(t)) return null;
     return super.defaultValue(t);
   }
 
@@ -26,6 +27,37 @@ export class CppGen extends CLikeGen {
     const parts = v?.k === 'join' ? v.parts : [v];
     const items = parts.map((p) => (this.typeOf(p) === 'bool' ? `(${this.sub(p, C.cond + 1)} ? "true" : "false")` : this.sub(p, C.add, { k: 'str', v: '' })));
     return `cout << ${items.join(' << ')}${newline ? ' << endl' : ''}`;
+  }
+
+  protected catchDecl(name: string): string {
+    return `const exception& ${name}`;
+  }
+
+  protected errorMessage(name: string): Code {
+    return [`string(${name}.what())`, ATOM];
+  }
+
+  protected throwCode(message: string): string {
+    this.imports.add('<stdexcept>');
+    return `throw runtime_error(${message})`;
+  }
+
+  protected dictLiteral(e: Expr & { k: 'dict' }, kt: Ty, vt: Ty): Code {
+    const type = `map<${this.typeName(kt === '?' ? 'string' : kt, 'ret')}, ${this.typeName(vt === '?' ? 'int' : vt, 'ret')}>`;
+    return [`${type}{${e.entries.map((x) => `{${this.sub(x.key)}, ${this.sub(x.value)}}`).join(', ')}}`, ATOM];
+  }
+
+  protected dgetCode(dict: Ex, key: Ex): Code {
+    return [`${this.sub(dict, ATOM)}[${this.sub(key)}]`, ATOM];
+  }
+
+  protected dsetCode(dict: Ex, key: Ex, value: Ex): string {
+    return `${this.sub(dict, ATOM)}[${this.sub(key)}] = ${this.sub(value)}`;
+  }
+
+  protected keysCode(dict: Ex): string {
+    this.useHelper('keysOf');
+    return `keysOf(${this.sub(dict)})`;
   }
 
   protected emptyLine(): string {
@@ -185,6 +217,8 @@ export class CppGen extends CLikeGen {
     const text = parts.map((p) => p.join('\n')).join('\n');
     const includes = new Set(['<iostream>', '<string>']);
     if (/\bvector</.test(text)) includes.add('<vector>');
+    if (/\bmap</.test(text)) includes.add('<map>');
+    if (/\b(runtime_error|exception)\b/.test(text)) includes.add('<stdexcept>');
     if (this.usesRandom) {
       includes.add('<cstdlib>');
       includes.add('<ctime>');

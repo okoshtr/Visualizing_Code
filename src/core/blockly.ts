@@ -138,6 +138,17 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         return { type: 'member_get', id, fields: { NAME: e.name }, inputs: inputs([['OBJ', e.obj]]) };
       case 'cond':
         return { type: 'logic_ternary', id, inputs: inputs([['IF', e.cond], ['THEN', e.a], ['ELSE', e.b]]) };
+      case 'errmsg':
+        return { type: 'error_message', id };
+      case 'dict':
+        return {
+          type: 'dict_create',
+          id,
+          extraState: { pairs: e.entries.length },
+          inputs: inputs(e.entries.flatMap((x, i) => [[`KEY${i}`, x.key], [`VALUE${i}`, x.value]] as [string, Ex][])),
+        };
+      case 'dget':
+        return { type: 'dict_get', id, inputs: inputs([['DICT', e.dict], ['KEY', e.key, textShadow('')]]) };
       case 'raw':
         return { type: 'code_expr', id, fields: { CODE: e.code, LANG: e.lang } };
       default:
@@ -171,7 +182,14 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
       case 'repeat':
         return { type: 'controls_repeat_ext', id, inputs: { ...inputs([['TIMES', s.times, numShadow(10)]]), ...body('DO', s.body) } };
       case 'while':
+        if (s.post) return { type: 'controls_dowhile', id, fields: { MODE: s.until ? 'UNTIL' : 'WHILE' }, inputs: { ...inputs([['BOOL', s.cond]]), ...body('DO', s.body) } };
         return { type: 'controls_whileUntil', id, fields: { MODE: s.until ? 'UNTIL' : 'WHILE' }, inputs: { ...inputs([['BOOL', s.cond]]), ...body('DO', s.body) } };
+      case 'try':
+        return { type: 'control_try', id, inputs: { ...body('TRY', s.body), ...body('CATCH', s.handler) } };
+      case 'throw':
+        return { type: 'error_throw', id, inputs: inputs([['VALUE', s.value, textShadow('Fehler')]]) };
+      case 'dset':
+        return { type: 'dict_set', id, inputs: inputs([['DICT', s.dict], ['KEY', s.key, textShadow('')], ['VALUE', s.value, numShadow(0)]]) };
       case 'for':
         return {
           type: 'controls_for',
@@ -387,6 +405,14 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return withId({ k: 'member', obj: e(inp(b, 'OBJ')), name: field(b, 'NAME') ?? 'x' });
       case 'logic_ternary':
         return withId({ k: 'cond', cond: e(inp(b, 'IF')), a: e(inp(b, 'THEN')), b: e(inp(b, 'ELSE')) });
+      case 'error_message':
+        return withId({ k: 'errmsg' });
+      case 'dict_create': {
+        const n = b.extraState?.pairs ?? 0;
+        return withId({ k: 'dict', entries: Array.from({ length: n }, (_, i) => ({ key: e(inp(b, `KEY${i}`)), value: e(inp(b, `VALUE${i}`)) })) });
+      }
+      case 'dict_get':
+        return withId({ k: 'dget', dict: e(inp(b, 'DICT')), key: e(inp(b, 'KEY')) });
       case 'code_expr':
         return withId({ k: 'raw', code: String(field(b, 'CODE') ?? ''), lang: (field(b, 'LANG') ?? 'python') as Lang });
       default:
@@ -431,6 +457,14 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return { k: 'repeat', times: b.type === 'controls_repeat' ? { k: 'num', v: Number(field(b, 'TIMES') ?? 10) } : e(inp(b, 'TIMES')), body: body('DO') };
       case 'controls_whileUntil':
         return { k: 'while', until: field(b, 'MODE') === 'UNTIL', cond: e(inp(b, 'BOOL')), body: body('DO') };
+      case 'controls_dowhile':
+        return { k: 'while', until: field(b, 'MODE') === 'UNTIL', cond: e(inp(b, 'BOOL')), body: body('DO'), post: true };
+      case 'control_try':
+        return { k: 'try', body: body('TRY'), handler: body('CATCH') };
+      case 'error_throw':
+        return { k: 'throw', value: e(inp(b, 'VALUE')) };
+      case 'dict_set':
+        return { k: 'dset', dict: e(inp(b, 'DICT')), key: e(inp(b, 'KEY')), value: e(inp(b, 'VALUE')) };
       case 'controls_for':
         return { k: 'for', var: varName(field(b, 'VAR')), from: e(inp(b, 'FROM')), to: e(inp(b, 'TO')), by: e(inp(b, 'BY')), body: body('DO') };
       case 'controls_forEach':

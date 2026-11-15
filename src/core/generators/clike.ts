@@ -1,6 +1,6 @@
 // Shared generator for the C-like languages: Java, C#, C++ and JavaScript.
 
-import { MAIN, type PlaceInfo, type Ty, elemOf, isList } from '../analysis';
+import { MAIN, type PlaceInfo, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
 import type { Ex, Expr, FunctionDef, Stmt } from '../ir';
 import { stmtExprs, walkExpr } from '../ir';
 import { ATOM, BaseGen, type Code, foldPlus } from './base';
@@ -97,8 +97,19 @@ export abstract class CLikeGen extends BaseGen {
     if (t === 'string') return '""';
     if (t === 'bool') return 'false';
     if (isList(t)) return this.listLiteral({ k: 'list', items: [] }, elemOf(t), true)[0];
+    if (isDict(t)) return this.dictLiteral({ k: 'dict', entries: [] }, ...dictParts(t))[0];
     return null;
   }
+
+  // ---- errors & dictionaries (language hooks) ------------------------------------------
+  protected abstract catchDecl(name: string): string;
+  protected abstract errorMessage(name: string): Code;
+  protected abstract throwCode(message: string): string;
+  protected abstract dictLiteral(e: Expr & { k: 'dict' }, keyType: Ty, valueType: Ty): Code;
+  protected abstract dgetCode(dict: Ex, key: Ex): Code;
+  protected abstract dsetCode(dict: Ex, key: Ex, value: Ex): string;
+  /** Code that iterates over the keys of a dictionary. */
+  protected abstract keysCode(dict: Ex): string;
 
   /** Locals that are declared inside this place (JS main also declares the globals it uses). */
   protected declaredLocals(place: PlaceInfo): Set<string> {
@@ -172,16 +183,38 @@ export abstract class CLikeGen extends BaseGen {
       }
       case 'while': {
         const cond = s.until ? `!${this.sub(s.cond, C.unary, { k: 'bool', v: false })}` : this.sub(s.cond, 0, { k: 'bool', v: false });
-        this.open(`while (${cond})`, () => this.body(s.body));
+        if (s.post) {
+          this.open('do', () => this.body(s.body), false);
+          this.emit(`} while (${cond});`);
+        } else this.open(`while (${cond})`, () => this.body(s.body));
         break;
       }
+      case 'try':
+        this.open('try', () => this.body(s.body), false);
+        this.withCatch((name) => {
+          if (this.allman) {
+            this.emit('}');
+            this.open(`catch (${this.catchDecl(name)})`, () => this.body(s.handler));
+          } else {
+            this.emit(`} catch (${this.catchDecl(name)}) {`);
+            this.indented(() => this.body(s.handler));
+            this.emit('}');
+          }
+        });
+        break;
+      case 'throw':
+        this.emit(this.throwCode(this.sub(s.value, 0, { k: 'str', v: 'Fehler' })) + ';');
+        break;
+      case 'dset':
+        this.emit(this.dsetCode(s.dict, s.key, s.value) + ';');
+        break;
       case 'for':
         this.forStmt(s);
         break;
       case 'foreach': {
         const loopOnly = this.a.place(this.place).loopOnly.has(s.var) && !this.a.globals.has(s.var);
         const t = this.varType(s.var);
-        const list = this.sub(s.list, 0, { k: 'list', items: [] });
+        const list = isDict(this.typeOf(s.list)) ? this.keysCode(s.list) : this.sub(s.list, 0, { k: 'list', items: [] });
         if (loopOnly) {
           this.open(this.foreachHead(this.declKeyword(t), this.id(s.var), list), () => this.body(s.body));
         } else if (!this.typed) {
@@ -437,6 +470,16 @@ export abstract class CLikeGen extends BaseGen {
         return [`${this.sub(e.obj, ATOM)}.${e.name}`, ATOM];
       case 'cond':
         return [`${this.sub(e.cond, C.cond + 1)} ? ${this.sub(e.a, C.cond + 1)} : ${this.sub(e.b, C.cond)}`, C.cond];
+      case 'errmsg': {
+        const n = this.currentCatch();
+        return n ? this.errorMessage(n) : ['""', ATOM];
+      }
+      case 'dict': {
+        const [kt, vt] = dictParts(this.typeOf(e));
+        return this.dictLiteral(e, kt, vt);
+      }
+      case 'dget':
+        return this.dgetCode(e.dict, e.key);
       case 'raw':
         return this.rawCode(e.code, e.lang);
       default:

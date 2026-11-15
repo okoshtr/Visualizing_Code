@@ -99,8 +99,32 @@ export class PythonGen extends BaseGen {
         this.indented(() => this.suite(s.body));
         break;
       case 'while':
+        if (s.post) {
+          // Python has no do-while: loop forever and check at the end
+          this.emit('while True:');
+          this.indented(() => {
+            this.body(s.body);
+            this.emit(s.until ? `if ${this.sub(s.cond, 0, { k: 'bool', v: false })}:` : `if not ${this.sub(s.cond, P.not + 1, { k: 'bool', v: false })}:`);
+            this.indented(() => this.emit('break'));
+          });
+          break;
+        }
         this.emit(s.until ? `while not ${this.sub(s.cond, P.not + 1, { k: 'bool', v: false })}:` : `while ${this.sub(s.cond, 0, { k: 'bool', v: false })}:`);
         this.indented(() => this.suite(s.body));
+        break;
+      case 'try':
+        this.emit('try:');
+        this.indented(() => this.suite(s.body));
+        this.withCatch((name) => {
+          this.emit(`except Exception as ${name}:`);
+          this.indented(() => this.suite(s.handler));
+        });
+        break;
+      case 'throw':
+        this.emit(`raise Exception(${this.sub(s.value, 0, { k: 'str', v: 'Fehler' })})`);
+        break;
+      case 'dset':
+        this.emit(`${this.sub(s.dict, ATOM)}[${this.sub(s.key)}] = ${this.sub(s.value)}`);
         break;
       case 'for':
         this.emit(`for ${this.id(s.var)} in ${this.range(s.from, s.to, s.by)}:`);
@@ -245,6 +269,14 @@ export class PythonGen extends BaseGen {
         return [`${this.sub(e.obj, ATOM)}.${e.name}`, ATOM];
       case 'cond':
         return [`${this.sub(e.a, P.cond + 1)} if ${this.sub(e.cond, P.cond + 1)} else ${this.sub(e.b, P.cond)}`, P.cond];
+      case 'errmsg': {
+        const n = this.currentCatch();
+        return [n ? `str(${n})` : '""', ATOM];
+      }
+      case 'dict':
+        return [`{${e.entries.map((x) => `${this.sub(x.key)}: ${this.sub(x.value)}`).join(', ')}}`, ATOM];
+      case 'dget':
+        return [`${this.sub(e.dict, ATOM)}[${this.sub(e.key)}]`, ATOM];
       case 'raw':
         return this.rawCode(e.code, e.lang);
       default:

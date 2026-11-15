@@ -2,7 +2,7 @@
 // recognises library calls (via the catalog templates), built-in functions,
 // user function calls, and fixes things that need type information.
 
-import { analyze, isList } from '../analysis';
+import { analyze, isDict, isList } from '../analysis';
 import { foldPlus } from '../generators/base';
 import type { Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
 import { exprEquals } from '../ir';
@@ -307,7 +307,8 @@ function libPatterns(lang: Lang, statements: boolean): Compiled<ExprBuilder>[] {
     for (const fn of lib.fns) {
       if ((fn.returns === null) !== statements) continue;
       const impl = implFor(fn, lang);
-      for (const tpl of [impl.code, ...(impl.alt ?? [])]) {
+      const templates = [...(impl.match === false ? [] : [impl.code, ...Object.values(impl.byType ?? {})]), ...(impl.alt ?? [])];
+      for (const tpl of templates) {
         list.push([tpl, (h) => ({ k: 'lib', lib: lib.id, fn: fn.id, args: fn.params.map((_, i) => h[i] ?? null) })]);
       }
     }
@@ -407,6 +408,17 @@ class Normalizer {
     return this.lang === 'vba' ? s.toLowerCase() : s;
   }
 
+  /** Arguments of a call of a user function: keyword arguments and default values are filled in. */
+  callArgs(f: FunctionDef, e: Expr & { k: 'pcall' }): Ex[] {
+    const args: Ex[] = e.args.map((a) => this.expr(a));
+    for (const [name, value] of Object.entries(e.kwargs ?? {})) {
+      const i = f.params.indexOf(name);
+      if (i >= 0) args[i] = this.expr(value);
+    }
+    for (let i = 0; i < f.params.length; i++) if (args[i] === undefined) args[i] = f.defaults?.[i] ? this.expr(f.defaults[i]) : null;
+    return args.slice(0, Math.max(f.params.length, e.args.length));
+  }
+
   raw(e: Expr): Expr {
     return { k: 'raw', code: e.src ?? '?', lang: this.lang };
   }
@@ -454,6 +466,12 @@ class Normalizer {
         return { ...s, obj: this.expr(s.obj), args: s.args.map((a) => this.expr(a)) };
       case 'return':
         return { ...s, value: this.expr(s.value) };
+      case 'throw':
+        return { ...s, value: this.expr(s.value) };
+      case 'try':
+        return { ...s, body: this.stmts(s.body), handler: this.stmts(s.handler) };
+      case 'dset':
+        return { ...s, dict: this.expr(s.dict), key: this.expr(s.key), value: this.expr(s.value) };
       default:
         return s;
     }
@@ -476,10 +494,11 @@ class Normalizer {
       return this.stmt({ k: 'print', value: parts.length === 1 ? parts[0] : { k: 'join', parts }, newline: true });
     }
     if (e.k === 'pcall') {
-      const args = e.args.map((a) => this.expr(a));
       const c = e.callee;
+      const fn = c.k === 'var' ? this.userFns.get(this.key(c.name)) : undefined;
+      const args = fn ? this.callArgs(fn, e) : e.args.map((a) => this.expr(a));
       if (c.k === 'var') {
-        const f = this.userFns.get(this.key(c.name));
+        const f = fn;
         if (f && !f.returns) return { k: 'callstmt', name: f.name, args };
         return { k: 'libstmt', lib: 'ext:', fn: c.name, args };
       }
@@ -501,12 +520,12 @@ class Normalizer {
     if (b) return this.children(b.build(b.holes));
     switch (e.k) {
       case 'pcall': {
-        const args = e.args.map((a) => this.expr(a));
         const c = e.callee;
+        const fn = c.k === 'var' ? this.userFns.get(this.key(c.name)) : undefined;
+        if (fn) return { k: 'call', name: fn.name, args: this.callArgs(fn, e) };
+        const args = e.args.map((a) => this.expr(a));
         if (e.kwargs) return this.raw(e);
         if (c.k === 'var') {
-          const f = this.userFns.get(this.key(c.name));
-          if (f) return { k: 'call', name: f.name, args };
           if (this.lang === 'vba' && c.name.toLowerCase() === 'array') return { k: 'list', items: args };
           return { k: 'lib', lib: 'ext:', fn: c.name, args };
         }
@@ -561,12 +580,16 @@ class Normalizer {
     const out: any = { ...e };
     for (const [k, v] of Object.entries(e)) {
       if (k === 'src' || k === 'id') continue;
-      if (Array.isArray(v)) out[k] = v.map((x) => (x && typeof x === 'object' && 'k' in x ? this.expr(x) : x));
+      if (Array.isArray(v)) out[k] = v.map((x) => (x && typeof x === 'object' && 'k' in x ? this.expr(x) : isEntry(x) ? { key: this.expr(x.key), value: this.expr(x.value) } : x));
       else if (v && typeof v === 'object' && 'k' in (v as any)) out[k] = this.expr(v as Expr);
     }
     delete out.src;
     return out;
   }
+}
+
+function isEntry(x: any): x is { key: Ex; value: Ex } {
+  return !!x && typeof x === 'object' && !('k' in x) && 'key' in x && 'value' in x;
 }
 
 function dottedName(e: Ex): string | null {
@@ -587,7 +610,7 @@ function mapExprs(stmts: Stmt[], fn: (e: Expr) => Expr): Stmt[] {
     if (!e) return e;
     const out: any = { ...e };
     for (const [k, v] of Object.entries(e)) {
-      if (Array.isArray(v)) out[k] = v.map((x) => (x && typeof x === 'object' && 'k' in x ? ex(x) : x));
+      if (Array.isArray(v)) out[k] = v.map((x) => (x && typeof x === 'object' && 'k' in x ? ex(x) : isEntry(x) ? { key: ex(x.key), value: ex(x.value) } : x));
       else if (v && typeof v === 'object' && 'k' in (v as any)) out[k] = ex(v as Expr);
     }
     return fn(out);
@@ -595,7 +618,7 @@ function mapExprs(stmts: Stmt[], fn: (e: Expr) => Expr): Stmt[] {
   const st = (s: Stmt): Stmt => {
     const out: any = { ...s };
     for (const [k, v] of Object.entries(s)) {
-      if (k === 'body' || k === 'else') out[k] = v ? (v as Stmt[]).map(st) : v;
+      if (k === 'body' || k === 'else' || k === 'handler') out[k] = v ? (v as Stmt[]).map(st) : v;
       else if (k === 'branches') out[k] = (v as any[]).map((b) => ({ cond: ex(b.cond), body: b.body.map(st) }));
       else if (k === 'args') out[k] = (v as Ex[]).map(ex);
       else if (v && typeof v === 'object' && 'k' in (v as any)) out[k] = ex(v as Expr);
@@ -648,7 +671,7 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
     ...program,
     meta: { ...program.meta, sourceLang: lang },
     main: program.main ? nz.stmts(program.main) : null,
-    functions: program.functions.map((f) => ({ ...f, body: nz.stmts(f.body) })),
+    functions: program.functions.map(({ defaults: _d, ...f }) => ({ ...f, body: nz.stmts(f.body) })),
   };
   p = mapProgram(p, simplify);
 
@@ -675,12 +698,15 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
           return { k: 'join', parts: mergeStr(parts) };
         }
         case 'len':
+          if (isDict(t(e.a))) return { k: 'lib', lib: 'dict', fn: 'size', args: [e.a] };
           if (e.of === 'auto') return { ...e, of: isList(t(e.a)) ? 'list' : 'text' };
           return e;
         case 'index':
           if (isStr(e.list)) return { k: 'lib', lib: 'text', fn: 'charAt', args: [e.list, e.index] };
+          if (isDict(t(e.list))) return { k: 'dget', dict: e.list, key: e.index };
           return e;
         case 'lib':
+          if ((e.lib === 'text' || e.lib === 'list') && e.fn === 'contains' && isDict(t(e.args[0]))) return { ...e, lib: 'dict', fn: 'has' };
           if (e.lib === 'text' && (e.fn === 'contains' || e.fn === 'indexOf') && isList(t(e.args[0]))) return { ...e, lib: 'list' };
           if (e.lib === 'list' && (e.fn === 'contains' || e.fn === 'indexOf') && isStr(e.args[0])) return { ...e, lib: 'text' };
           return e;
@@ -689,6 +715,7 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
       }
     });
   }
+  p = fixDictStatements(p);
   p = mapProgram(p, stripDivCasts);
   // Every language except Python rounds integer division and remainder toward zero.
   p = mapProgram(p, (e) => {
@@ -698,6 +725,23 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
     return trunc ? { ...rest, trunc: true } : rest;
   });
   return { program: p, diagnostics: [...diagnostics, ...nz.diagnostics] };
+}
+
+/** list-style statements on dictionaries: d[k] = v, removing an entry. */
+function fixDictStatements(p: Program): Program {
+  const a = analyze(p);
+  const fix = (stmts: Stmt[], place: string): Stmt[] =>
+    stmts.map((s0) => {
+      let s: any = { ...s0 };
+      for (const key of ['body', 'else', 'handler']) if (Array.isArray(s[key])) s[key] = fix(s[key], place);
+      if (s.branches) s.branches = s.branches.map((b: any) => ({ ...b, body: fix(b.body, place) }));
+      const isD = (x: Ex) => isDict(a.typeOf(x, place));
+      if (s.k === 'listset' && isD(s.list)) s = { k: 'dset', dict: s.list, key: s.index, value: s.value, gap: s.gap, trail: s.trail, id: s.id };
+      if (s.k === 'libstmt' && s.lib === 'list' && s.fn === 'removeAt' && isD(s.args[0])) s = { ...s, lib: 'dict', fn: 'remove' };
+      if (s.k === 'listadd' && isD(s.list)) s = { k: 'raw', code: '?', lang: p.meta?.sourceLang ?? 'python' };
+      return s;
+    });
+  return { ...p, main: p.main ? fix(p.main, '') : null, functions: p.functions.map((f) => ({ ...f, body: fix(f.body, f.name) })) };
 }
 
 function mergeStr(parts: Ex[]): Ex[] {

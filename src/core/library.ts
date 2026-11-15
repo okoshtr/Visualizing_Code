@@ -6,7 +6,7 @@
 
 import type { Lang } from './ir';
 
-export type ParamKind = 'number' | 'text' | 'list' | 'any';
+export type ParamKind = 'number' | 'text' | 'list' | 'dict' | 'any';
 
 export interface LibParam {
   name: string;
@@ -25,13 +25,17 @@ export interface LangImpl {
   random?: boolean;
   /** Additional templates that are only used to recognise code. */
   alt?: string[];
+  /** false: the template is only used to generate code, never to recognise it (too general). */
+  match?: false;
+  /** Different template depending on the element type of the first argument (e.g. "double"). */
+  byType?: Record<string, string>;
 }
 
 /**
  * Return type: a concrete type, "same" (type of first argument), "elem"
  * (element type of the first argument, which is a list) or null (statement).
  */
-export type LibReturn = 'int' | 'double' | 'string' | 'bool' | 'list<string>' | 'same' | 'elem' | null;
+export type LibReturn = 'int' | 'double' | 'string' | 'bool' | 'list<string>' | 'same' | 'elem' | 'keys' | 'values' | null;
 
 export interface LibFn {
   id: string;
@@ -45,6 +49,8 @@ export interface LibFn {
 }
 
 export interface LibRuntime {
+  /** Files of the built-in runner (name -> text). */
+  files: Map<string, string>;
   random(): number;
   sleep(seconds: number): Promise<void>;
   error(message: string): never;
@@ -60,6 +66,10 @@ const T = (code: string, extra: Omit<LangImpl, 'code'> = {}): LangImpl => ({ cod
 
 function checkList(v: any, rt: LibRuntime): any[] {
   if (!Array.isArray(v)) rt.error('Hier wird eine Liste erwartet.');
+  return v;
+}
+function checkDict(v: any, rt: LibRuntime): Map<any, any> {
+  if (!(v instanceof Map)) rt.error('Hier wird ein Wörterbuch erwartet.');
   return v;
 }
 function checkIndex(list: any[], i: any, rt: LibRuntime, allowEnd = false): number {
@@ -533,8 +543,212 @@ export const LIBRARIES: Library[] = [
           checkList(l, rt).length = 0;
         },
       },
+      {
+        id: 'sum',
+        label: 'Summe',
+        params: [{ name: 'Liste', kind: 'list' }],
+        returns: 'elem',
+        impl: {
+          python: 'sum({0})',
+          java: T('{0}.stream().mapToInt(Integer::intValue).sum()', { byType: { double: '{0}.stream().mapToDouble(Double::doubleValue).sum()' } }),
+          javascript: T('sumList({0})', { helpers: ['sumList'] }),
+          csharp: T('{0}.Sum()', { imports: ['System.Linq'] }),
+          cpp: T('accumulate({0}.begin(), {0}.end(), 0)', { imports: ['<numeric>'], byType: { double: 'accumulate({0}.begin(), {0}.end(), 0.0)' } }),
+          vba: T('ListSum({0})', { helpers: ['ListSum'] }),
+        },
+        run: ([l], rt) => checkList(l, rt).reduce((a, b) => a + Number(b), 0),
+      },
+      ...(['min', 'max'] as const).map<LibFn>((f) => ({
+        id: f,
+        label: f === 'min' ? 'kleinstes Element' : 'größtes Element',
+        params: [{ name: 'Liste', kind: 'list' }],
+        returns: 'elem',
+        impl: {
+          python: `${f}({0})`,
+          java: `Collections.${f}({0})`,
+          javascript: T(`${f}List({0})`, { helpers: [`${f}List`] }),
+          csharp: T(`{0}.${f === 'min' ? 'Min' : 'Max'}()`, { imports: ['System.Linq'] }),
+          cpp: T(`*${f}_element({0}.begin(), {0}.end())`, { imports: ['<algorithm>'] }),
+          vba: T(`List${f === 'min' ? 'Min' : 'Max'}({0})`, { helpers: [`List${f === 'min' ? 'Min' : 'Max'}`] }),
+        },
+        run: ([l], rt) => {
+          const list = checkList(l, rt);
+          if (!list.length) rt.error('Die Liste ist leer.');
+          return list.reduce((a, b) => (f === 'min' ? (b < a ? b : a) : b > a ? b : a));
+        },
+      })),
     ],
   },
+  {
+    id: 'dict',
+    label: 'Wörterbuch',
+    fns: [
+      {
+        id: 'has',
+        label: 'enthält Schlüssel',
+        params: [
+          { name: 'Wörterbuch', kind: 'dict' },
+          { name: 'Schlüssel', kind: 'any', def: 'a' },
+        ],
+        returns: 'bool',
+        impl: {
+          python: '{1} in {0}',
+          java: '{0}.containsKey({1})',
+          javascript: '{0}.has({1})',
+          csharp: '{0}.ContainsKey({1})',
+          cpp: '({0}.count({1}) > 0)',
+          vba: '{0}.Exists({1})',
+        },
+        run: ([d, k], rt) => checkDict(d, rt).has(k),
+      },
+      {
+        id: 'keys',
+        label: 'alle Schlüssel',
+        params: [{ name: 'Wörterbuch', kind: 'dict' }],
+        returns: 'keys',
+        impl: {
+          python: T('list({0}.keys())', { alt: ['list({0})'] }),
+          java: 'new ArrayList<>({0}.keySet())',
+          javascript: 'Array.from({0}.keys())',
+          csharp: T('{0}.Keys.ToList()', { imports: ['System.Linq'] }),
+          cpp: T('keysOf({0})', { helpers: ['keysOf'] }),
+          vba: '{0}.Keys',
+        },
+        run: ([d], rt) => [...checkDict(d, rt).keys()],
+      },
+      {
+        id: 'values',
+        label: 'alle Werte',
+        params: [{ name: 'Wörterbuch', kind: 'dict' }],
+        returns: 'values',
+        impl: {
+          python: 'list({0}.values())',
+          java: 'new ArrayList<>({0}.values())',
+          javascript: 'Array.from({0}.values())',
+          csharp: T('{0}.Values.ToList()', { imports: ['System.Linq'] }),
+          cpp: T('valuesOf({0})', { helpers: ['valuesOf'] }),
+          vba: '{0}.Items',
+        },
+        run: ([d], rt) => [...checkDict(d, rt).values()],
+      },
+      {
+        id: 'size',
+        label: 'Anzahl Einträge',
+        params: [{ name: 'Wörterbuch', kind: 'dict' }],
+        returns: 'int',
+        impl: {
+          python: T('len({0})', { match: false }),
+          java: T('{0}.size()', { match: false }),
+          javascript: '{0}.size',
+          csharp: T('{0}.Count', { match: false }),
+          cpp: T('(int) {0}.size()', { match: false }),
+          vba: T('{0}.Count', { match: false }),
+        },
+        run: ([d], rt) => checkDict(d, rt).size,
+      },
+      {
+        id: 'remove',
+        label: 'entferne Schlüssel',
+        params: [
+          { name: 'Wörterbuch', kind: 'dict' },
+          { name: 'Schlüssel', kind: 'any', def: 'a' },
+        ],
+        returns: null,
+        impl: {
+          python: T('{0}.pop({1})', { match: false, alt: ['del {0}[{1}]'] }),
+          java: T('{0}.remove({1})', { match: false }),
+          javascript: '{0}.delete({1})',
+          csharp: T('{0}.Remove({1})', { match: false }),
+          cpp: '{0}.erase({1})',
+          vba: '{0}.Remove {1}',
+        },
+        run: ([d, k], rt) => {
+          checkDict(d, rt).delete(k);
+        },
+      },
+    ],
+  },
+  {
+    id: 'file',
+    label: 'Datei',
+    fns: [
+      {
+        id: 'read',
+        label: 'lies Text aus Datei',
+        params: [{ name: 'Dateiname', kind: 'text', def: 'notizen.txt' }],
+        returns: 'string',
+        impl: {
+          python: T('pathlib.Path({0}).read_text(encoding="utf-8")', { imports: ['pathlib'] }),
+          java: T('readFile({0})', { helpers: ['readFile'] }),
+          javascript: 'require("fs").readFileSync({0}, "utf8")',
+          csharp: T('File.ReadAllText({0})', { imports: ['System.IO'] }),
+          cpp: T('readFile({0})', { helpers: ['readFile'] }),
+          vba: T('ReadFile({0})', { helpers: ['ReadFile'] }),
+        },
+        run: ([name], rt) => {
+          const text = rt.files.get(String(name));
+          if (text === undefined) rt.error(`Die Datei "${name}" gibt es nicht.`);
+          return text;
+        },
+      },
+      {
+        id: 'write',
+        label: 'schreibe Text in Datei',
+        params: [
+          { name: 'Dateiname', kind: 'text', def: 'notizen.txt' },
+          { name: 'Text', kind: 'text', def: 'Hallo' },
+        ],
+        returns: null,
+        impl: {
+          python: T('pathlib.Path({0}).write_text({1}, encoding="utf-8")', { imports: ['pathlib'] }),
+          java: T('writeFile({0}, {1})', { helpers: ['writeFile'] }),
+          javascript: 'require("fs").writeFileSync({0}, {1})',
+          csharp: T('File.WriteAllText({0}, {1})', { imports: ['System.IO'] }),
+          cpp: T('writeFile({0}, {1})', { helpers: ['writeFile'] }),
+          vba: T('WriteFile {0}, {1}', { helpers: ['WriteFile'] }),
+        },
+        run: ([name, text], rt) => {
+          rt.files.set(String(name), String(text));
+        },
+      },
+      {
+        id: 'appendLine',
+        label: 'hänge Zeile an Datei an',
+        params: [
+          { name: 'Dateiname', kind: 'text', def: 'notizen.txt' },
+          { name: 'Zeile', kind: 'text', def: 'Hallo' },
+        ],
+        returns: null,
+        impl: {
+          python: T('open({0}, "a", encoding="utf-8").write({1} + "\\n")'),
+          java: T('appendLine({0}, {1})', { helpers: ['appendLine'] }),
+          javascript: 'require("fs").appendFileSync({0}, {1} + "\\n")',
+          csharp: T('File.AppendAllText({0}, {1} + "\\n")', { imports: ['System.IO'] }),
+          cpp: T('appendLine({0}, {1})', { helpers: ['appendLine'] }),
+          vba: T('AppendLine {0}, {1}', { helpers: ['AppendLine'] }),
+        },
+        run: ([name, line], rt) => {
+          rt.files.set(String(name), (rt.files.get(String(name)) ?? '') + String(line) + '\n');
+        },
+      },
+      {
+        id: 'exists',
+        label: 'Datei existiert',
+        params: [{ name: 'Dateiname', kind: 'text', def: 'notizen.txt' }],
+        returns: 'bool',
+        impl: {
+          python: T('pathlib.Path({0}).exists()', { imports: ['pathlib'] }),
+          java: T('new java.io.File({0}).exists()'),
+          javascript: 'require("fs").existsSync({0})',
+          csharp: T('File.Exists({0})', { imports: ['System.IO'] }),
+          cpp: T('fileExists({0})', { helpers: ['fileExists'] }),
+          vba: 'Len(Dir({0})) > 0',
+        },
+        run: ([name], rt) => rt.files.has(String(name)),
+      },
+    ],
+  },
+
   {
     id: 'random',
     label: 'Zufall',
@@ -656,6 +870,36 @@ export const externalModule = (lib: string) => lib.slice(4);
 
 export const HELPERS: Partial<Record<Lang, Record<string, { code: string; imports?: string[]; random?: boolean }>>> = {
   java: {
+    readFile: {
+      imports: ['java.nio.file.*'],
+      code: `static String readFile(String name) {
+    try {
+        return Files.readString(Path.of(name));
+    } catch (java.io.IOException e) {
+        throw new RuntimeException("Datei kann nicht gelesen werden: " + name);
+    }
+}`,
+    },
+    writeFile: {
+      imports: ['java.nio.file.*'],
+      code: `static void writeFile(String name, String text) {
+    try {
+        Files.writeString(Path.of(name), text);
+    } catch (java.io.IOException e) {
+        throw new RuntimeException("Datei kann nicht geschrieben werden: " + name);
+    }
+}`,
+    },
+    appendLine: {
+      imports: ['java.nio.file.*'],
+      code: `static void appendLine(String name, String line) {
+    try {
+        Files.writeString(Path.of(name), line + "\\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    } catch (java.io.IOException e) {
+        throw new RuntimeException("Datei kann nicht geschrieben werden: " + name);
+    }
+}`,
+    },
     sleep: {
       code: `static void sleep(double seconds) {
     try {
@@ -667,6 +911,9 @@ export const HELPERS: Partial<Record<Lang, Record<string, { code: string; import
     },
   },
   javascript: {
+    sumList: { code: `function sumList(list) {\n  return list.reduce((a, b) => a + b, 0);\n}` },
+    minList: { code: `function minList(list) {\n  return list.reduce((a, b) => (b < a ? b : a));\n}` },
+    maxList: { code: `function maxList(list) {\n  return list.reduce((a, b) => (b > a ? b : a));\n}` },
     sortList: {
       code: `function sortList(list) {
   list.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -700,6 +947,54 @@ export const HELPERS: Partial<Record<Lang, Record<string, { code: string; import
     },
   },
   cpp: {
+    keysOf: {
+      imports: ['<map>'],
+      code: `template <typename K, typename V>
+vector<K> keysOf(const map<K, V>& m) {
+    vector<K> keys;
+    for (const auto& entry : m) keys.push_back(entry.first);
+    return keys;
+}`,
+    },
+    valuesOf: {
+      imports: ['<map>'],
+      code: `template <typename K, typename V>
+vector<V> valuesOf(const map<K, V>& m) {
+    vector<V> values;
+    for (const auto& entry : m) values.push_back(entry.second);
+    return values;
+}`,
+    },
+    readFile: {
+      imports: ['<fstream>', '<sstream>'],
+      code: `string readFile(const string& name) {
+    ifstream file(name);
+    if (!file) throw runtime_error("Datei kann nicht gelesen werden: " + name);
+    stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}`,
+    },
+    writeFile: {
+      imports: ['<fstream>'],
+      code: `void writeFile(const string& name, const string& text) {
+    ofstream file(name);
+    file << text;
+}`,
+    },
+    appendLine: {
+      imports: ['<fstream>'],
+      code: `void appendLine(const string& name, const string& line) {
+    ofstream file(name, ios::app);
+    file << line << "\\n";
+}`,
+    },
+    fileExists: {
+      imports: ['<fstream>'],
+      code: `bool fileExists(const string& name) {
+    return ifstream(name).good();
+}`,
+    },
     toUpper: {
       imports: ['<cctype>'],
       code: `string toUpper(string text) {
@@ -794,6 +1089,69 @@ int indexOf(const vector<T>& items, const T& value) {
     },
   },
   vba: {
+    NewDict: {
+      code: `Function NewDict(ParamArray pairs() As Variant) As Object
+    Dim i As Long
+    Set NewDict = CreateObject("Scripting.Dictionary")
+    For i = LBound(pairs) To UBound(pairs) - 1 Step 2
+        NewDict(pairs(i)) = pairs(i + 1)
+    Next i
+End Function`,
+    },
+    ListSum: {
+      code: `Function ListSum(list As Variant) As Variant
+    Dim x As Variant
+    ListSum = 0
+    For Each x In list
+        ListSum = ListSum + x
+    Next x
+End Function`,
+    },
+    ListMin: {
+      code: `Function ListMin(list As Variant) As Variant
+    Dim x As Variant
+    ListMin = list(LBound(list))
+    For Each x In list
+        If x < ListMin Then ListMin = x
+    Next x
+End Function`,
+    },
+    ListMax: {
+      code: `Function ListMax(list As Variant) As Variant
+    Dim x As Variant
+    ListMax = list(LBound(list))
+    For Each x In list
+        If x > ListMax Then ListMax = x
+    Next x
+End Function`,
+    },
+    ReadFile: {
+      code: `Function ReadFile(name As String) As String
+    Dim f As Integer
+    f = FreeFile
+    Open name For Input As #f
+    ReadFile = Input$(LOF(f), f)
+    Close #f
+End Function`,
+    },
+    WriteFile: {
+      code: `Sub WriteFile(name As String, text As String)
+    Dim f As Integer
+    f = FreeFile
+    Open name For Output As #f
+    Print #f, text;
+    Close #f
+End Sub`,
+    },
+    AppendLine: {
+      code: `Sub AppendLine(name As String, line As String)
+    Dim f As Integer
+    f = FreeFile
+    Open name For Append As #f
+    Print #f, line
+    Close #f
+End Sub`,
+    },
     ArcSin: { code: `Function ArcSin(x As Double) As Double\n    ArcSin = Atn(x / Sqr(-x * x + 1))\nEnd Function` },
     ArcCos: { code: `Function ArcCos(x As Double) As Double\n    ArcCos = Atn(-x / Sqr(-x * x + 1)) + 2 * Atn(1)\nEnd Function` },
     RepeatText: {

@@ -1,4 +1,4 @@
-import { MAIN, type Ty, elemOf, isList } from '../analysis';
+import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
 import type { Ex, Expr } from '../ir';
 import { ATOM, type Code, type GenResult, foldPlus } from './base';
 import { C, CLikeGen } from './clike';
@@ -10,11 +10,42 @@ export class CSharpGen extends CLikeGen {
 
   protected typeName(t: Ty): string {
     if (isList(t)) return `List<${this.typeName(elemOf(t))}>`;
+    if (isDict(t)) return `Dictionary<${this.typeName(dictParts(t)[0])}, ${this.typeName(dictParts(t)[1])}>`;
     return { int: 'int', double: 'double', string: 'string', bool: 'bool' }[t] ?? 'object';
   }
 
   protected printCode(value: Ex, newline: boolean): string {
     return `Console.${newline ? 'WriteLine' : 'Write'}(${this.sub(this.listsAsText(value), 0, { k: 'str', v: '' })})`;
+  }
+
+  protected catchDecl(name: string): string {
+    return `Exception ${name}`;
+  }
+
+  protected errorMessage(name: string): Code {
+    return [`${name}.Message`, ATOM];
+  }
+
+  protected throwCode(message: string): string {
+    return `throw new Exception(${message})`;
+  }
+
+  protected dictLiteral(e: Expr & { k: 'dict' }, kt: Ty, vt: Ty): Code {
+    const type = `Dictionary<${this.typeName(kt === '?' ? 'string' : kt)}, ${this.typeName(vt === '?' ? 'int' : vt)}>`;
+    if (!e.entries.length) return [`new ${type}()`, ATOM];
+    return [`new ${type} { ${e.entries.map((x) => `{ ${this.sub(x.key)}, ${this.sub(x.value)} }`).join(', ')} }`, ATOM];
+  }
+
+  protected dgetCode(dict: Ex, key: Ex): Code {
+    return [`${this.sub(dict, ATOM)}[${this.sub(key)}]`, ATOM];
+  }
+
+  protected dsetCode(dict: Ex, key: Ex, value: Ex): string {
+    return `${this.sub(dict, ATOM)}[${this.sub(key)}] = ${this.sub(value)}`;
+  }
+
+  protected keysCode(dict: Ex): string {
+    return `${this.sub(dict, ATOM)}.Keys`;
   }
 
   protected emptyLine(): string {
@@ -143,7 +174,7 @@ export class CSharpGen extends CLikeGen {
       });
     const text = inner.join('\n');
     const usings = new Set(['System']);
-    if (/\bList</.test(text)) usings.add('System.Collections.Generic');
+    if (/\b(List|Dictionary)</.test(text)) usings.add('System.Collections.Generic');
     for (const imp of this.imports) usings.add(imp);
     for (const imp of this.program.meta?.imports ?? []) if (imp.lang === 'csharp') usings.add(imp.module);
     const out = [...[...usings].sort().map((u) => `using ${u};`), ''];

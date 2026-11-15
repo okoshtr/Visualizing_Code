@@ -1,4 +1,4 @@
-import { type Analysis, MAIN, type Ty, isList, isNumeric } from '../analysis';
+import { type Analysis, MAIN, type Ty, elemOf, isList, isNumeric } from '../analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from '../ir';
 import { walkStmts } from '../ir';
 import { HELPERS, externalModule, findLibFn, implFor, isExternalLib } from '../library';
@@ -148,6 +148,26 @@ export abstract class BaseGen {
     return isNumeric(this.typeOf(e));
   }
 
+  /** Names of the caught errors of the surrounding "versuche" blocks (innermost last). */
+  protected catchNames: string[] = [];
+
+  protected withCatch(fn: (name: string) => void) {
+    const name = this.catchNames.length ? `fehler${this.catchNames.length + 1}` : 'fehler';
+    this.catchNames.push(name);
+    try {
+      fn(name);
+    } finally {
+      this.catchNames.pop();
+    }
+  }
+
+  /** Name of the innermost caught error (warns outside of a "falls Fehler" part). */
+  protected currentCatch(): string | null {
+    const n = this.catchNames[this.catchNames.length - 1];
+    if (!n) this.warn('Der Block "Fehlermeldung" steht außerhalb von "falls ein Fehler passiert".');
+    return n ?? null;
+  }
+
   /** "[" + join(list, ", ") + "]" for languages that cannot print lists directly. */
   protected listText(e: Ex): Expr {
     return { k: 'join', parts: [{ k: 'str', v: '[' }, { k: 'lib', lib: 'text', fn: 'joinList', args: [e, { k: 'str', v: ', ' }] }, { k: 'str', v: ']' }] };
@@ -290,6 +310,7 @@ export abstract class BaseGen {
     if (!p) return { k: 'num', v: 0 };
     if (p.kind === 'text') return { k: 'str', v: '' };
     if (p.kind === 'list') return { k: 'list', items: [] };
+    if (p.kind === 'dict') return { k: 'dict', entries: [] };
     return { k: 'num', v: 0 };
   }
 
@@ -304,7 +325,9 @@ export abstract class BaseGen {
     for (const imp of impl.imports ?? []) this.imports.add(imp);
     for (const h of impl.helpers ?? []) this.useHelper(h);
     if (impl.random) this.usesRandom = true;
-    return this.template(impl.code, args, (i) => this.libDefault(lib, fn, i));
+    const elem = elemOf(this.typeOf(args[0] ?? null));
+    const code = impl.byType?.[elem] ?? impl.code;
+    return this.template(code, args, (i) => this.libDefault(lib, fn, i));
   }
 
   protected useHelper(name: string) {

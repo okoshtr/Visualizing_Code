@@ -1,4 +1,4 @@
-import { MAIN, type PlaceInfo, type Ty, isList } from '../analysis';
+import { MAIN, type PlaceInfo, type Ty, isDict, isList } from '../analysis';
 import type { Ex, Expr, FunctionDef, Stmt } from '../ir';
 import { walkStmts } from '../ir';
 import { ATOM, BaseGen, type Code, type GenResult, foldPlus } from './base';
@@ -41,6 +41,7 @@ export class VbaGen extends BaseGen {
 
   typeName(t: Ty): string {
     if (isList(t)) return 'Variant';
+    if (isDict(t)) return 'Object';
     return { int: 'Long', double: 'Double', string: 'String', bool: 'Boolean' }[t] ?? 'Variant';
   }
 
@@ -111,7 +112,27 @@ export class VbaGen extends BaseGen {
         this.emit(`Debug.Print ${this.sub(this.listsAsText(s.value), 0, { k: 'str', v: '' })}${s.newline ? '' : ';'}`);
         break;
       case 'set':
-        this.emit(`${this.id(s.name)} = ${this.sub(s.value, 0, { k: 'num', v: 0 })}`);
+        // objects (dictionaries) are assigned with "Set"
+        this.emit(`${isDict(this.varType(s.name)) ? 'Set ' : ''}${this.id(s.name)} = ${this.sub(s.value, 0, { k: 'num', v: 0 })}`);
+        break;
+      case 'try': {
+        const n = ++this.labelCount;
+        if (this.catchNames.length) this.warn('VBA: verschachtelte "versuche"-Blöcke werden nicht richtig unterstützt.');
+        this.emit(`On Error GoTo Fehler${n}`);
+        this.body(s.body);
+        this.emit(`GoTo Weiter${n}`);
+        this.lines.push(`Fehler${n}:`);
+        this.withCatch(() => this.body(s.handler));
+        this.emit(`Resume Weiter${n}`);
+        this.lines.push(`Weiter${n}:`);
+        this.emit('On Error GoTo 0');
+        break;
+      }
+      case 'throw':
+        this.emit(`Err.Raise vbObjectError + 1, , ${this.sub(s.value, 0, { k: 'str', v: 'Fehler' })}`);
+        break;
+      case 'dset':
+        this.emit(`${this.sub(s.dict, ATOM)}(${this.sub(s.key)}) = ${this.sub(s.value)}`);
         break;
       case 'change': {
         const n = this.id(s.name);
@@ -137,7 +158,8 @@ export class VbaGen extends BaseGen {
         break;
       }
       case 'while':
-        this.loop('Do', `Do ${s.until ? 'Until' : 'While'} ${this.sub(s.cond, 0, { k: 'bool', v: false })}`, 'Loop', s.body);
+        if (s.post) this.loop('Do', 'Do', `Loop ${s.until ? 'Until' : 'While'} ${this.sub(s.cond, 0, { k: 'bool', v: false })}`, s.body);
+        else this.loop('Do', `Do ${s.until ? 'Until' : 'While'} ${this.sub(s.cond, 0, { k: 'bool', v: false })}`, 'Loop', s.body);
         break;
       case 'for': {
         const v = this.id(s.var);
@@ -148,7 +170,8 @@ export class VbaGen extends BaseGen {
       }
       case 'foreach': {
         const v = this.id(s.var);
-        this.loop('For', `For Each ${v} In ${this.sub(s.list, 0, { k: 'list', items: [] })}`, `Next ${v}`, s.body);
+        const list = isDict(this.typeOf(s.list)) ? `${this.sub(s.list, ATOM)}.Keys` : this.sub(s.list, 0, { k: 'list', items: [] });
+        this.loop('For', `For Each ${v} In ${list}`, `Next ${v}`, s.body);
         break;
       }
       case 'break': {
@@ -190,7 +213,8 @@ export class VbaGen extends BaseGen {
         break;
       case 'return':
         if (this.fn?.returns) {
-          if (s.value) this.emit(`${this.id(this.fn.name)} = ${this.sub(s.value)}`);
+          const set = isDict(this.a.returnType(this.fn.name)) ? 'Set ' : '';
+          if (s.value) this.emit(`${set}${this.id(this.fn.name)} = ${this.sub(s.value)}`);
           if (!this.isLastStatement(s)) this.emit('Exit Function');
         } else if (!this.isLastStatement(s)) this.emit('Exit Sub');
         break;
@@ -337,6 +361,14 @@ export class VbaGen extends BaseGen {
         return [`${this.sub(e.obj, ATOM)}.${e.name}`, ATOM];
       case 'cond':
         return [`IIf(${this.sub(e.cond)}, ${this.sub(e.a)}, ${this.sub(e.b)})`, ATOM];
+      case 'errmsg':
+        return this.currentCatch() ? ['Err.Description', ATOM] : ['""', ATOM];
+      case 'dict':
+        if (!e.entries.length) return ['CreateObject("Scripting.Dictionary")', ATOM];
+        this.useHelper('NewDict');
+        return [`NewDict(${e.entries.flatMap((x) => [this.sub(x.key), this.sub(x.value)]).join(', ')})`, ATOM];
+      case 'dget':
+        return [`${this.sub(e.dict, ATOM)}(${this.sub(e.key)})`, ATOM];
       case 'raw':
         return this.rawCode(e.code, e.lang);
       default:

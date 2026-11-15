@@ -1,6 +1,6 @@
 // Runs a program directly (the "green flag"). Works the same for all languages.
 
-import { type Analysis, MAIN, type Ty, analyze, elemOf, isList } from './analysis';
+import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
 import { findLibFn, isExternalLib } from './library';
 
@@ -11,7 +11,12 @@ export interface RunHost {
   /** Called before every statement (used for highlighting / slow motion). */
   step?(blockId: string | undefined): Promise<void> | void;
   shouldStop(): boolean;
+  /** Files the program can read and write (default: kept in memory while the page is open). */
+  files?: Map<string, string>;
 }
+
+/** Files of the built-in runner when the host does not provide its own. */
+export const memoryFiles = new Map<string, string>();
 
 export class RunError extends Error {
   constructor(
@@ -47,6 +52,13 @@ export function formatValue(v: any, lang: Lang, ty: Ty = '', printed = false, ne
       return items.length ? `[ ${items.join(', ')} ]` : '[]';
     }
     return '[' + v.map((x) => formatValue(x, lang, el, printed, true)).join(', ') + ']';
+  }
+  if (v instanceof Map) {
+    const [kt, vt] = dictParts(ty);
+    const q = (x: any, t: Ty) => (typeof x === 'string' && (lang === 'python' || lang === 'javascript') ? `'${x}'` : formatValue(x, lang, t, printed, true));
+    const items = [...v].map(([k, x]) => (lang === 'java' ? `${q(k, kt)}=${q(x, vt)}` : lang === 'javascript' ? `${q(k, kt)} => ${q(x, vt)}` : `${q(k, kt)}: ${q(x, vt)}`));
+    if (lang === 'javascript') return `Map(${v.size}) {${items.length ? ' ' + items.join(', ') + ' ' : ''}}`;
+    return `{${items.join(', ')}}`;
   }
   if (typeof v === 'string' && nested && lang === 'python') return `'${v}'`;
   if (v === undefined || v === null) return '';
@@ -144,6 +156,9 @@ class Runner {
     return e ? this.a.typeOf(e, this.frame.place) : '';
   }
 
+  /** Messages of the errors caught by the surrounding "versuche" blocks. */
+  errors: string[] = [];
+
   get frame(): Frame {
     return this.stack[this.stack.length - 1];
   }
@@ -238,13 +253,41 @@ class Runner {
       }
       case 'while':
         while (true) {
-          const c = this.truthy(await this.expr(s.cond));
-          if (s.until ? c : !c) break;
+          if (!s.post) {
+            const c = this.truthy(await this.expr(s.cond));
+            if (s.until ? c : !c) break;
+          }
           const r = await this.loopBody(s.body);
           if (r === 'break') break;
+          if (s.post) {
+            const c = this.truthy(await this.expr(s.cond));
+            if (s.until ? c : !c) break;
+          }
           await this.tick();
         }
         return;
+      case 'try':
+        try {
+          await this.block(s.body);
+        } catch (e) {
+          if (!(e instanceof RunError)) throw e;
+          this.errors.push(e.message);
+          try {
+            await this.block(s.handler);
+          } finally {
+            this.errors.pop();
+          }
+        }
+        return;
+      case 'throw':
+        this.err(formatValue(await this.expr(s.value), this.lang, this.ty(s.value)) || 'Fehler');
+        break;
+      case 'dset': {
+        const d = await this.expr(s.dict);
+        if (!(d instanceof Map)) this.err('Hier wird ein Wörterbuch erwartet.');
+        d.set(await this.expr(s.key), await this.expr(s.value));
+        return;
+      }
       case 'for': {
         const from = this.num(await this.expr(s.from));
         const to = this.num(await this.expr(s.to));
@@ -262,6 +305,7 @@ class Runner {
       case 'foreach': {
         let list = await this.expr(s.list);
         if (typeof list === 'string') list = [...list];
+        if (list instanceof Map) list = [...list.keys()];
         if (!Array.isArray(list)) this.err('"für jedes Element" braucht eine Liste.');
         for (let i = 0; i < list.length; i++) {
           this.set(s.var, list[i]);
@@ -340,6 +384,7 @@ class Runner {
     const args: any[] = [];
     for (const a of argExprs) args.push(await this.expr(a));
     return await def.run(args, {
+      files: this.host.files ?? memoryFiles,
       random: Math.random,
       sleep: async (sec) => {
         const end = Date.now() + Math.max(0, sec) * 1000;
@@ -470,6 +515,20 @@ class Runner {
         return this.lib(e.lib, e.fn, e.args);
       case 'cond':
         return this.truthy(await this.expr(e.cond)) ? this.expr(e.a) : this.expr(e.b);
+      case 'errmsg':
+        return this.errors[this.errors.length - 1] ?? '';
+      case 'dict': {
+        const m = new Map<any, any>();
+        for (const x of e.entries) m.set(await this.expr(x.key), await this.expr(x.value));
+        return m;
+      }
+      case 'dget': {
+        const d = await this.expr(e.dict);
+        if (!(d instanceof Map)) this.err('Hier wird ein Wörterbuch erwartet.');
+        const k = await this.expr(e.key);
+        if (!d.has(k)) this.err(`Den Schlüssel ${formatValue(k, this.lang)} gibt es im Wörterbuch nicht.`);
+        return d.get(k);
+      }
       case 'method':
         this.err(`Die Methode "${e.name}" kann die eingebaute Ausführung nicht ausführen.`);
         break;
@@ -541,6 +600,7 @@ class Runner {
 }
 
 function equals(a: any, b: any): boolean {
+  if (a instanceof Map || b instanceof Map) return a instanceof Map && b instanceof Map && JSON.stringify([...a]) === JSON.stringify([...b]);
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
   return a === b;
 }

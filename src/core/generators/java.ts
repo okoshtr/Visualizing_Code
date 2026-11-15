@@ -1,4 +1,4 @@
-import { MAIN, type Ty, elemOf, isList } from '../analysis';
+import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
 import type { Ex, Expr } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
@@ -11,16 +11,49 @@ export class JavaGen extends CLikeGen {
 
   protected typeName(t: Ty): string {
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
+    if (isDict(t)) return `HashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return { int: 'int', double: 'double', string: 'String', bool: 'boolean' }[t] ?? 'Object';
   }
 
   private boxed(t: Ty): string {
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
+    if (isDict(t)) return `HashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return BOX[t] ?? 'Object';
   }
 
   protected printCode(value: Ex, newline: boolean): string {
     return `System.out.${newline ? 'println' : 'print'}(${this.sub(value, 0, { k: 'str', v: '' })})`;
+  }
+
+  protected catchDecl(name: string): string {
+    return `Exception ${name}`;
+  }
+
+  protected errorMessage(name: string): Code {
+    return [`${name}.getMessage()`, ATOM];
+  }
+
+  protected throwCode(message: string): string {
+    return `throw new RuntimeException(${message})`;
+  }
+
+  protected dictLiteral(e: Expr & { k: 'dict' }, _kt: Ty, vt: Ty): Code {
+    if (!e.entries.length) return ['new HashMap<>()', ATOM];
+    if (e.entries.length > 10) this.warn('Java: Map.of erlaubt höchstens 10 Einträge.');
+    const items = e.entries.flatMap((x) => [this.sub(x.key), x.value?.k === 'num' && vt === 'double' ? this.numberLiteral(x.value.v, true) : this.sub(x.value)]);
+    return [`new HashMap<>(Map.of(${items.join(', ')}))`, ATOM];
+  }
+
+  protected dgetCode(dict: Ex, key: Ex): Code {
+    return [`${this.sub(dict, ATOM)}.get(${this.sub(key)})`, ATOM];
+  }
+
+  protected dsetCode(dict: Ex, key: Ex, value: Ex): string {
+    return `${this.sub(dict, ATOM)}.put(${this.sub(key)}, ${this.sub(value)})`;
+  }
+
+  protected keysCode(dict: Ex): string {
+    return `${this.sub(dict, ATOM)}.keySet()`;
   }
 
   protected emptyLine(): string {
@@ -169,7 +202,7 @@ export class JavaGen extends CLikeGen {
     });
     const text = inner.join('\n');
     const out: string[] = [];
-    if (/\b(ArrayList|List|Arrays|Collections|Scanner|Random)\b/.test(text)) out.push('import java.util.*;');
+    if (/\b(ArrayList|List|Arrays|Collections|Scanner|Random|HashMap|Map)\b/.test(text)) out.push('import java.util.*;');
     for (const imp of [...this.imports].sort()) out.push(`import ${imp};`);
     for (const imp of this.program.meta?.imports ?? []) if (imp.lang === 'java') out.push(`import ${imp.module};`);
     if (out.length) out.push('');

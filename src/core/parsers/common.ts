@@ -81,5 +81,77 @@ export function markGap(stmts: Stmt[], src: string, pos: number): Stmt[] {
   return stmts;
 }
 
+/**
+ * Rebuilds a statement / expression tree. fn may return a replacement for an expression
+ * (it is not visited further) or undefined to keep it and continue with its children.
+ */
+export function mapTree<T>(node: T, fn: (e: Expr) => Expr | undefined): T {
+  const visit = (x: any): any => {
+    if (Array.isArray(x)) return x.map(visit);
+    if (!x || typeof x !== 'object') return x;
+    if ('k' in x && isExprKind(x.k)) {
+      const r = fn(x);
+      if (r !== undefined) return r;
+    }
+    const out: any = {};
+    for (const [key, v] of Object.entries(x)) out[key] = key === 'src' || key === 'id' ? v : visit(v);
+    return out;
+  };
+  return visit(node);
+}
+
+const STMT_KINDS = new Set(['print', 'set', 'change', 'if', 'repeat', 'while', 'for', 'foreach', 'break', 'continue', 'listadd', 'listset', 'callstmt', 'libstmt', 'methodstmt', 'return', 'try', 'throw', 'dset', 'comment', 'pexpr']);
+const isExprKind = (k: string) => !STMT_KINDS.has(k);
+
+/** In a catch handler: references to the caught error variable become "Fehlermeldung". */
+export function errorVarToMessage(stmts: Stmt[], name: string, lang: Lang): Stmt[] {
+  if (!name) return stmts;
+  const isVar = (e: any) => e?.k === 'var' && (lang === 'vba' ? e.name.toLowerCase() === name.toLowerCase() : e.name === name);
+  return mapTree(stmts, (e) => {
+    // str(e), e.getMessage(), e.Message, e.what(), e.message, string(e.what())
+    if (e.k === 'pcall' && e.callee.k === 'var' && (e.callee.name === 'str' || e.callee.name === 'string') && e.args.length === 1) {
+      const a: any = e.args[0];
+      if (isVar(a)) return { k: 'errmsg' };
+      if (a?.k === 'pcall' && a.callee.k === 'member' && isVar(a.callee.obj) && a.callee.name === 'what') return { k: 'errmsg' };
+    }
+    if (e.k === 'pcall' && e.callee.k === 'member' && isVar(e.callee.obj) && ['getMessage', 'what', 'ToString', 'toString'].includes(e.callee.name) && !e.args.length) return { k: 'errmsg' };
+    if (e.k === 'member' && isVar(e.obj) && (e.name === 'Message' || e.name === 'message')) return { k: 'errmsg' };
+    if (isVar(e)) return { k: 'errmsg' };
+    return undefined;
+  });
+}
+
+/** if-chain for switch / Select Case / match: subject == value1 || subject == value2 ... */
+export function caseCondition(subject: Ex, values: Ex[]): Ex {
+  const conds: Ex[] = values.map((v) => ({ k: 'bin', op: 'EQ', a: subject, b: v }) as Expr);
+  return conds.reduce((acc, c) => (acc ? ({ k: 'bin', op: 'OR', a: acc, b: c } as Expr) : c), null as Ex);
+}
+
+/** Does the statement list end the case (break / return / throw / continue at its end)? */
+export function endsCase(stmts: Stmt[]): boolean {
+  const last = stmts[stmts.length - 1];
+  return !!last && (last.k === 'break' || last.k === 'return' || last.k === 'throw' || last.k === 'continue');
+}
+
+/** "break" anywhere except at the end (inside if-blocks) cannot be turned into an if-chain. */
+export function hasInnerBreak(stmts: Stmt[]): boolean {
+  let found = false;
+  const visit = (list: Stmt[], top: boolean) => {
+    list.forEach((s, i) => {
+      if (s.k === 'break' && !(top && i === list.length - 1)) found = true;
+      if (s.k === 'if') {
+        s.branches.forEach((b) => visit(b.body, false));
+        if (s.else) visit(s.else, false);
+      }
+      if (s.k === 'try') {
+        visit(s.body, false);
+        visit(s.handler, false);
+      }
+    });
+  };
+  visit(stmts, true);
+  return found;
+}
+
 export const isIdentStart = (c: string) => /[\p{L}_$]/u.test(c);
 export const isIdentChar = (c: string) => /[\p{L}\p{N}_$]/u.test(c);

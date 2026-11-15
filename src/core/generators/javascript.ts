@@ -1,4 +1,4 @@
-import { MAIN, type PlaceInfo, type Ty, isList, namesIn } from '../analysis';
+import { MAIN, type PlaceInfo, type Ty, isDict, isList, namesIn } from '../analysis';
 import type { Ex, Expr, FunctionDef } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
@@ -15,6 +15,7 @@ export class JavaScriptGen extends CLikeGen {
   protected defaultValue(t: Ty): string | null {
     if (t === 'double') return '0';
     if (isList(t)) return '[]';
+    if (isDict(t)) return 'new Map()';
     return super.defaultValue(t);
   }
 
@@ -35,6 +36,35 @@ export class JavaScriptGen extends CLikeGen {
     if (newline) return `console.log(${this.sub(value, 0, { k: 'str', v: '' })})`;
     const v = this.isStringy(value) ? this.sub(value, 0) : `String(${this.sub(value)})`;
     return `process.stdout.write(${v})`;
+  }
+
+  protected catchDecl(name: string): string {
+    return name;
+  }
+
+  protected errorMessage(name: string): Code {
+    return [`${name}.message`, ATOM];
+  }
+
+  protected throwCode(message: string): string {
+    return `throw new Error(${message})`;
+  }
+
+  protected dictLiteral(e: Expr & { k: 'dict' }): Code {
+    if (!e.entries.length) return ['new Map()', ATOM];
+    return [`new Map([${e.entries.map((x) => `[${this.sub(x.key)}, ${this.sub(x.value)}]`).join(', ')}])`, ATOM];
+  }
+
+  protected dgetCode(dict: Ex, key: Ex): Code {
+    return [`${this.sub(dict, ATOM)}.get(${this.sub(key)})`, ATOM];
+  }
+
+  protected dsetCode(dict: Ex, key: Ex, value: Ex): string {
+    return `${this.sub(dict, ATOM)}.set(${this.sub(key)}, ${this.sub(value)})`;
+  }
+
+  protected keysCode(dict: Ex): string {
+    return `${this.sub(dict, ATOM)}.keys()`;
   }
 
   protected emptyLine(): string {

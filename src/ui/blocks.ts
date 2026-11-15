@@ -20,6 +20,7 @@ export const COLORS = {
   list: '#DE4E39',
   library: '#3482D6',
   function: '#E5507A',
+  dict: '#B9671E',
   advanced: '#6B7891',
 } as const;
 
@@ -53,6 +54,7 @@ const blockStyles: Record<string, Blockly.Theme.BlockStyle> = {
   library_blocks: style(COLORS.library),
   procedure_blocks: style(COLORS.function),
   advanced_blocks: style(COLORS.advanced),
+  dict_blocks: style(COLORS.dict),
 };
 
 const categoryStyles: Record<string, { colour: string }> = Object.fromEntries(
@@ -67,6 +69,7 @@ const categoryStyles: Record<string, { colour: string }> = Object.fromEntries(
     library_category: COLORS.library,
     function_category: COLORS.function,
     advanced_category: COLORS.advanced,
+    dict_category: COLORS.dict,
   }).map(([k, c]) => [k, { colour: c }]),
 );
 
@@ -420,6 +423,78 @@ function installBlocks() {
   };
 
   installVariadic();
+  installDictCreate();
+  Blockly.common.defineBlocksWithJsonArray([
+    {
+      type: 'controls_dowhile',
+      message0: 'wiederhole',
+      message1: '%1',
+      args1: [{ type: 'input_statement', name: 'DO' }],
+      message2: 'und prüfe danach: %1 %2',
+      args2: [
+        { type: 'field_dropdown', name: 'MODE', options: [['solange', 'WHILE'], ['bis', 'UNTIL']] },
+        { type: 'input_value', name: 'BOOL' },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      style: 'loop_blocks',
+      tooltip: 'Führt die Blöcke mindestens einmal aus und prüft die Bedingung erst danach (do … while).',
+    },
+    {
+      type: 'control_try',
+      message0: 'versuche',
+      message1: '%1',
+      args1: [{ type: 'input_statement', name: 'TRY' }],
+      message2: 'falls ein Fehler passiert',
+      message3: '%1',
+      args3: [{ type: 'input_statement', name: 'CATCH' }],
+      previousStatement: null,
+      nextStatement: null,
+      style: 'logic_blocks',
+      tooltip: 'Wenn in den oberen Blöcken ein Fehler passiert (z. B. keine Zahl eingegeben), werden die unteren Blöcke ausgeführt statt das Programm abzubrechen.',
+    },
+    {
+      type: 'error_throw',
+      message0: 'löse Fehler aus %1',
+      args0: [{ type: 'input_value', name: 'VALUE' }],
+      previousStatement: null,
+      style: 'logic_blocks',
+      tooltip: 'Bricht mit einer Fehlermeldung ab (oder springt in "falls ein Fehler passiert").',
+    },
+    {
+      type: 'error_message',
+      message0: 'Fehlermeldung',
+      output: 'String',
+      style: 'logic_blocks',
+      tooltip: 'Die Meldung des Fehlers, der gerade abgefangen wurde.',
+    },
+    {
+      type: 'dict_get',
+      message0: 'Wert zu %1 in %2',
+      args0: [
+        { type: 'input_value', name: 'KEY' },
+        { type: 'input_value', name: 'DICT' },
+      ],
+      inputsInline: true,
+      output: null,
+      style: 'dict_blocks',
+      tooltip: 'Der Wert, der im Wörterbuch zu diesem Schlüssel gespeichert ist.',
+    },
+    {
+      type: 'dict_set',
+      message0: 'setze in %1 den Wert zu %2 auf %3',
+      args0: [
+        { type: 'input_value', name: 'DICT' },
+        { type: 'input_value', name: 'KEY' },
+        { type: 'input_value', name: 'VALUE' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      style: 'dict_blocks',
+      tooltip: 'Speichert einen Wert zu einem Schlüssel (ein vorhandener Wert wird ersetzt).',
+    },
+  ]);
   installLibraryBlocks();
 
   Blockly.Blocks['func_return'].onchange = function (this: Blockly.BlockSvg) {
@@ -485,6 +560,57 @@ function rebuildArgs(block: Blockly.Block, count: number, label: (i: number) => 
     if (prev && prev.outputConnection) input.connection!.connect(prev.outputConnection);
   }
   for (let i = count; i < old.length; i++) old[i]?.dispose(true);
+}
+
+function installDictCreate() {
+  Blockly.Blocks['dict_create'] = {
+    argCount_: 0,
+    init(this: any) {
+      this.argCount_ = 0;
+      const head = this.appendDummyInput('HEAD').appendField('Wörterbuch');
+      addArgButtons(this, head);
+      this.setOutput(true);
+      this.setInputsInline(false);
+      this.setStyle('dict_blocks');
+      this.setTooltip('Ein Wörterbuch speichert Paare aus Schlüssel und Wert, z. B. Name → Alter. Mit + und − änderst du die Anzahl.');
+    },
+    updateArgs_(this: any) {
+      const old: Record<string, Blockly.Block | null> = {};
+      for (let i = 0; this.getInput(`KEY${i}`); i++) {
+        for (const n of [`KEY${i}`, `VALUE${i}`]) {
+          const c = this.getInput(n).connection;
+          const t = c.targetBlock();
+          old[n] = t && !t.isShadow() ? t : null;
+          if (old[n]) c.disconnect();
+          this.removeInput(n);
+        }
+      }
+      for (let i = 0; i < this.argCount_; i++) {
+        const k = this.appendValueInput(`KEY${i}`).setAlign(Blockly.inputs.Align.RIGHT).appendField('Schlüssel');
+        k.connection.setShadowState({ type: 'text', fields: { TEXT: '' } });
+        const v = this.appendValueInput(`VALUE${i}`).setAlign(Blockly.inputs.Align.RIGHT).appendField('→ Wert');
+        v.connection.setShadowState({ type: 'math_number', fields: { NUM: 0 } });
+        for (const [n, inp] of [[`KEY${i}`, k], [`VALUE${i}`, v]] as const) if (old[n]?.outputConnection) inp.connection.connect(old[n]!.outputConnection);
+      }
+      for (const [n, b] of Object.entries(old)) if (b && !this.getInput(n)) b.dispose(true);
+    },
+    saveExtraState(this: any) {
+      return { pairs: this.argCount_ };
+    },
+    loadExtraState(this: any, s: any) {
+      this.argCount_ = s?.pairs ?? 0;
+      this.updateArgs_();
+    },
+    mutationToDom(this: any) {
+      const m = Blockly.utils.xml.createElement('mutation');
+      m.setAttribute('pairs', String(this.argCount_));
+      return m;
+    },
+    domToMutation(this: any, m: Element) {
+      this.argCount_ = Number(m.getAttribute('pairs') ?? 0);
+      this.updateArgs_();
+    },
+  };
 }
 
 function installVariadic() {
@@ -721,6 +847,10 @@ export const TOOLBOX = {
         { kind: 'block', type: 'controls_if', extraState: { hasElse: true } },
         { kind: 'block', type: 'controls_flow_statements', fields: { FLOW: 'BREAK' } },
         { kind: 'block', type: 'controls_flow_statements', fields: { FLOW: 'CONTINUE' } },
+        { kind: 'block', type: 'controls_dowhile', fields: { MODE: 'WHILE' } },
+        { kind: 'block', type: 'control_try' },
+        { kind: 'block', type: 'error_message' },
+        { kind: 'block', type: 'error_throw', inputs: { VALUE: txt('Ungültige Eingabe') } },
       ],
     },
     {
@@ -782,6 +912,28 @@ export const TOOLBOX = {
         libBlock('list', 'removeAt', true),
         libBlock('random', 'choice', false),
         libBlock('time', 'sleep', true),
+        libBlock('list', 'sum', false),
+        libBlock('file', 'read', false),
+        libBlock('file', 'appendLine', true),
+      ],
+    },
+    {
+      kind: 'category',
+      name: 'Wörterbücher',
+      categorystyle: 'dict_category',
+      contents: [
+        {
+          kind: 'block',
+          type: 'dict_create',
+          extraState: { pairs: 2 },
+          inputs: { KEY0: txt('Anna'), VALUE0: num(12), KEY1: txt('Ben'), VALUE1: num(15) },
+        },
+        { kind: 'block', type: 'dict_get', inputs: { KEY: txt('Anna') } },
+        { kind: 'block', type: 'dict_set', inputs: { KEY: txt('Clara'), VALUE: num(11) } },
+        libBlock('dict', 'has', false),
+        libBlock('dict', 'keys', false),
+        libBlock('dict', 'size', false),
+        libBlock('dict', 'remove', true),
       ],
     },
     { kind: 'category', name: 'Funktionen', categorystyle: 'function_category', custom: 'FUNKTIONEN' },

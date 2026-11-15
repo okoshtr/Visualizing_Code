@@ -69,6 +69,12 @@ export type Expr = Node &
     | { k: 'member'; obj: Ex; name: string }
     /** "cond ? a : b" */
     | { k: 'cond'; cond: Ex; a: Ex; b: Ex }
+    /** Message of the error caught by the surrounding "versuche ... falls Fehler" block. */
+    | { k: 'errmsg' }
+    /** Dictionary (map) literal. */
+    | { k: 'dict'; entries: { key: Ex; value: Ex }[] }
+    /** Value for a key in a dictionary. */
+    | { k: 'dget'; dict: Ex; key: Ex }
     /** Fallback: source text that has no block yet. */
     | { k: 'raw'; code: string; lang: Lang }
     // ---- parse-only nodes, removed by normalize() ----
@@ -91,7 +97,8 @@ export type Stmt = Node &
     | { k: 'change'; name: string; by: Ex }
     | { k: 'if'; branches: { cond: Ex; body: Stmt[] }[]; else: Stmt[] | null }
     | { k: 'repeat'; times: Ex; body: Stmt[] }
-    | { k: 'while'; until: boolean; cond: Ex; body: Stmt[] }
+    /** post: the condition is checked after the body (do ... while). */
+    | { k: 'while'; until: boolean; cond: Ex; body: Stmt[]; post?: boolean }
     | { k: 'for'; var: string; from: Ex; to: Ex; by: Ex; body: Stmt[] }
     | { k: 'foreach'; var: string; list: Ex; body: Stmt[] }
     | { k: 'break' }
@@ -104,6 +111,12 @@ export type Stmt = Node &
     | { k: 'libstmt'; lib: string; fn: string; args: Ex[] }
     | { k: 'methodstmt'; obj: Ex; name: string; args: Ex[] }
     | { k: 'return'; value: Ex }
+    /** try / catch */
+    | { k: 'try'; body: Stmt[]; handler: Stmt[] }
+    /** raise an error with a message */
+    | { k: 'throw'; value: Ex }
+    /** set the value for a key in a dictionary */
+    | { k: 'dset'; dict: Ex; key: Ex; value: Ex }
     | { k: 'comment'; text: string }
     | { k: 'raw'; code: string; lang: Lang }
     // ---- parse-only ----
@@ -119,6 +132,8 @@ export interface FunctionDef {
   returns: boolean;
   /** Comment shown above the function. */
   comment?: string;
+  /** Parse only: default values of parameters (filled in at the call sites). */
+  defaults?: Ex[];
 }
 
 export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>`;
@@ -187,6 +202,8 @@ export function childBodies(s: Stmt): Stmt[][] {
     case 'for':
     case 'foreach':
       return [s.body];
+    case 'try':
+      return [s.body, s.handler];
     default:
       return [];
   }
@@ -224,6 +241,10 @@ export function stmtExprs(s: Stmt): Ex[] {
       return [s.value];
     case 'pexpr':
       return [s.e];
+    case 'throw':
+      return [s.value];
+    case 'dset':
+      return [s.dict, s.key, s.value];
     default:
       return [];
   }
@@ -265,6 +286,10 @@ export function exprChildren(e: Expr): Ex[] {
       return [e.a];
     case 'cond':
       return [e.cond, e.a, e.b];
+    case 'dict':
+      return e.entries.flatMap((x) => [x.key, x.value]);
+    case 'dget':
+      return [e.dict, e.key];
     case 'pin':
     case 'pbin':
       return [e.a, e.b];
