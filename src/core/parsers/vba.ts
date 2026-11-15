@@ -130,7 +130,7 @@ class VbaParser {
   globalStmts: Stmt[] = [];
   /** Variables per procedure ('' = module level) used to tell arrays from calls. */
   vars = new Map<string, Set<string>>();
-  procs: { name: string; params: string[]; body: Stmt[]; isFunction: boolean; declared: Set<string>; comment?: string }[] = [];
+  procs: { name: string; params: string[]; body: Stmt[]; isFunction: boolean; declared: Set<string>; comment?: string; defaults?: Ex[] }[] = [];
   pendingComments: string[] = [];
   loops: LoopCtx[] = [];
   helpers = helperNames('vba');
@@ -288,10 +288,12 @@ class VbaParser {
     this.p++;
     const name = this.name();
     const params: string[] = [];
+    const defaults: Ex[] = [];
     this.scope = name;
     if (this.eat('(')) {
       while (!this.is(')')) {
-        if (this.kw('optional') || this.kw('paramarray')) this.fail('Optionale Parameter haben noch keinen Block.');
+        this.eatKw('optional');
+        this.eatKw('paramarray');
         this.eatKw('byval');
         this.eatKw('byref');
         const pTok = this.tok;
@@ -303,6 +305,7 @@ class VbaParser {
         if (hint) this.types[`${name}:${pn}`] = hint;
         params.push(pn);
         this.addVar(pn);
+        if (this.eat('=')) defaults[params.length - 1] = this.expr();
         if (!this.eat(',')) break;
       }
       this.expect(')');
@@ -323,7 +326,7 @@ class VbaParser {
     const declared = this.vars.get(name) ?? new Set();
     this.scope = '';
     if (this.helpers.has(name) || [...this.helpers].some((h) => h.toLowerCase() === name.toLowerCase())) return;
-    this.procs.push({ name, params, body, isFunction, declared });
+    this.procs.push({ name, params, body, isFunction, declared, defaults });
   }
 
   // ---- statements -------------------------------------------------------------------
@@ -351,7 +354,7 @@ class VbaParser {
       }
       out.push(...got);
     }
-    return mergeListAdds(out);
+    return mergeTry(mergeListAdds(out));
   }
 
   /** Skips a line, or a whole block statement (If ... End If etc.), that cannot be parsed. */
@@ -504,9 +507,28 @@ class VbaParser {
         this.p++;
         break;
       case 'select':
+        return this.selectCase();
+      case 'on': {
+        // On Error GoTo label / On Error GoTo 0
+        this.p++;
+        if (!this.eatKw('error') || !this.eatKw('goto')) this.fail('Diese On-Anweisung hat noch keinen Block.');
+        if (this.cur() === 'num') {
+          this.p++;
+          this.lineEnd();
+          return [{ k: 'raw', code: 'On Error GoTo 0', lang: 'vba', src: '__onerror0__' }];
+        }
+        const label = this.name();
+        this.lineEnd();
+        return [{ k: 'raw', code: `On Error GoTo ${label}`, lang: 'vba', src: `__onerror__${label.toLowerCase()}` }];
+      }
+      case 'resume': {
+        this.p++;
+        if (this.cur() !== 'name' || this.kw('next')) this.fail('Diese Resume-Anweisung hat noch keinen Block.');
+        const label = this.name();
+        this.lineEnd();
+        return [{ k: 'raw', code: `Resume ${label}`, lang: 'vba', src: `__resume__${label.toLowerCase()}` }];
+      }
       case 'with':
-      case 'on':
-      case 'resume':
       case 'open':
       case 'close':
       case 'input':
@@ -537,18 +559,76 @@ class VbaParser {
       }
       this.fail('Diese Zuweisung hat noch keinen Block.');
     }
-    // call without parentheses: "Name a, b"
+    // call without parentheses: "Name a, b" (arguments may be left out: "a, , c")
     if (target?.k === 'var' || target?.k === 'member') {
       const args: Ex[] = [];
       while (!this.endOfLine()) {
+        if (this.is(',')) {
+          this.p++;
+          args.push(null);
+          continue;
+        }
         args.push(this.expr());
         if (!this.eat(',')) break;
       }
       this.lineEnd();
+      // Err.Raise number, source, description
+      if (target.k === 'member' && target.name.toLowerCase() === 'raise' && target.obj?.k === 'var' && target.obj.name.toLowerCase() === 'err') {
+        return [{ k: 'throw', value: args[2] ?? args[0] ?? { k: 'str', v: 'Fehler' } }];
+      }
       return [{ k: 'pexpr', e: { k: 'pcall', callee: target, args, src: this.srcFrom(start) } }];
     }
     this.lineEnd();
     return [{ k: 'pexpr', e: target! }];
+  }
+
+  /** Select Case x ... End Select  ->  chain of "falls / sonst falls / sonst" */
+  selectCase(): Stmt[] {
+    this.expectKw('select');
+    this.expectKw('case');
+    const subject = this.expr();
+    if (!subject || !['var', 'num', 'str', 'member'].includes(subject.k)) this.fail('Select Case über einen berechneten Wert hat noch keinen Block.');
+    this.lineEnd();
+    const branches: { cond: Ex; body: Stmt[] }[] = [];
+    let elseBody: Stmt[] | null = null;
+    const stop = () => this.kw('case') || (this.kw('end') && this.kw('select', 1));
+    while (true) {
+      this.skipNl();
+      if (this.cur() === 'comment') {
+        this.p++;
+        continue;
+      }
+      if (this.kw('end') && this.kw('select', 1)) break;
+      this.expectKw('case');
+      if (this.eatKw('else')) {
+        this.lineEnd();
+        elseBody = this.statements(stop);
+        continue;
+      }
+      const conds: Ex[] = [];
+      do {
+        if (this.eatKw('is')) {
+          const op = { '=': 'EQ', '<>': 'NEQ', '<': 'LT', '<=': 'LTE', '>': 'GT', '>=': 'GTE' }[this.tok.v] as any;
+          if (!op) this.fail('Vergleich nach "Is" erwartet.');
+          this.p++;
+          conds.push({ k: 'bin', op, a: subject, b: this.concat() });
+          continue;
+        }
+        const v = this.concat();
+        if (this.eatKw('to')) {
+          const hi = this.concat();
+          conds.push({ k: 'bin', op: 'AND', a: { k: 'bin', op: 'GTE', a: subject, b: v }, b: { k: 'bin', op: 'LTE', a: subject, b: hi } });
+        } else conds.push({ k: 'bin', op: 'EQ', a: subject, b: v });
+      } while (this.eat(','));
+      this.lineEnd();
+      const cond = conds.reduce((acc, c) => (acc ? ({ k: 'bin', op: 'OR', a: acc, b: c } as Expr) : c), null as Ex);
+      branches.push({ cond, body: this.statements(stop) });
+    }
+    this.expectKw('end');
+    this.expectKw('select');
+    this.lineEnd();
+    if (!branches.length) return elseBody ?? [];
+    return [{ k: 'if', branches, else: elseBody }];
   }
 
   ifStmt(): Stmt {
@@ -698,7 +778,15 @@ class VbaParser {
     this.lineEnd();
     const body = this.loopBody(() => this.kw('loop'));
     this.expectKw('loop');
-    if (this.kw('while') || this.kw('until')) this.fail('Do ... Loop While hat noch keinen Block.');
+    if ((this.kw('while') || this.kw('until')) && cond?.k === 'bool' && cond.v) {
+      // Do ... Loop While / Until: checked after the body
+      const u = this.kw('until');
+      this.p++;
+      const c = this.expr();
+      this.lineEnd();
+      return { k: 'while', until: u, cond: c, body, post: true };
+    }
+    if (this.kw('while') || this.kw('until')) this.fail('Do While ... Loop While hat noch keinen Block.');
     this.lineEnd();
     return { k: 'while', until, cond, body };
   }
@@ -832,6 +920,37 @@ function isUbound(e: Ex, name: string): boolean {
   return e?.k === 'pcall' && e.callee.k === 'var' && e.callee.name.toLowerCase() === 'ubound' && e.args.length === 1 && e.args[0]?.k === 'var' && e.args[0].name.toLowerCase() === name.toLowerCase();
 }
 
+/**
+ * On Error GoTo F / ... / GoTo W / F: / ... / Resume W / W: / On Error GoTo 0  ->  try
+ * (this is the pattern the VBA generator writes for "versuche ... falls ein Fehler passiert")
+ */
+function mergeTry(stmts: Stmt[]): Stmt[] {
+  const marker = (s: Stmt | undefined, prefix: string) => (s?.k === 'raw' && s.src?.startsWith(prefix) ? s.src.slice(prefix.length) : null);
+  const out: Stmt[] = [];
+  for (let i = 0; i < stmts.length; i++) {
+    const errLabel = marker(stmts[i], '__onerror__');
+    if (errLabel !== null) {
+      let done = false;
+      for (let j = i + 1; j < stmts.length - 1 && !done; j++) {
+        const cont = marker(stmts[j], '__goto__');
+        if (cont === null || marker(stmts[j + 1], '__label__') !== errLabel) continue;
+        for (let k = j + 2; k < stmts.length - 1; k++) {
+          if (marker(stmts[k], '__resume__') === cont && marker(stmts[k + 1], '__label__') === cont) {
+            out.push({ k: 'try', body: stmts.slice(i + 1, j), handler: stmts.slice(j + 2, k), ...(stmts[i].gap ? { gap: true } : {}) });
+            i = k + 1;
+            if (stmts[i + 1]?.k === 'raw' && stmts[i + 1].src === '__onerror0__') i++;
+            done = true;
+            break;
+          }
+        }
+      }
+      if (done) continue;
+    }
+    out.push(stmts[i]);
+  }
+  return out;
+}
+
 /** "ReDim Preserve l(UBound(l) + 1)" + "l(UBound(l)) = v"  ->  listadd */
 function mergeListAdds(stmts: Stmt[]): Stmt[] {
   const out: Stmt[] = [];
@@ -896,7 +1015,7 @@ export function parseVba(src: string): ParseResult {
       continue;
     }
     const returns = proc.isFunction;
-    functions.push({ name: proc.name, params: proc.params, body, returns, ...(proc.comment ? { comment: proc.comment } : {}) });
+    functions.push({ name: proc.name, params: proc.params, body, returns, ...(proc.comment ? { comment: proc.comment } : {}), ...(proc.defaults?.length ? { defaults: proc.defaults } : {}) });
     locals[proc.name] = [...(p.vars.get(proc.name) ?? [])]
       .filter((v) => !proc.params.some((x) => x.toLowerCase() === v) && !moduleVars.has(v))
       .map((v) => originalCase(body, v));

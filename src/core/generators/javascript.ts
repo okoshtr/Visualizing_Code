@@ -93,7 +93,18 @@ export class JavaScriptGen extends CLikeGen {
 
   protected askCode(prompt: Ex, as: 'text' | 'int' | 'float'): Code {
     const call = `input(${this.sub(prompt, 0, { k: 'str', v: '' })})`;
-    return [as === 'int' ? `parseInt(${call})` : as === 'float' ? `parseFloat(${call})` : call, ATOM];
+    if (as === 'text') return [call, ATOM];
+    return [`${this.parseFn(as)}(${call})`, ATOM];
+  }
+
+  /** parseInt / parseFloat do not raise errors; inside "versuche" a checking helper is used. */
+  private parseFn(as: 'int' | 'float'): string {
+    if (this.tryDepth > 0) {
+      const name = as === 'int' ? 'toInt' : 'toFloat';
+      this.useHelper(name);
+      return name;
+    }
+    return as === 'int' ? 'parseInt' : 'parseFloat';
   }
 
   protected convertCode(e: Expr & { k: 'convert' }): Code {
@@ -102,10 +113,10 @@ export class JavaScriptGen extends CLikeGen {
     if (e.to === 'int') {
       if (t === 'int') return this.expr(e.a!);
       if (t === 'double') return [`Math.trunc(${this.sub(e.a)})`, ATOM];
-      return [`parseInt(${this.sub(e.a)})`, ATOM];
+      return [`${this.parseFn('int')}(${this.sub(e.a)})`, ATOM];
     }
     if (t === 'double' || t === 'int') return this.expr(e.a!);
-    return [`parseFloat(${this.sub(e.a)})`, ATOM];
+    return [`${this.parseFn('float')}(${this.sub(e.a)})`, ATOM];
   }
 
   protected mathCode(e: Expr & { k: 'math' }): Code {

@@ -125,3 +125,17 @@ describe('code from one language keeps its meaning in the others', () => {
     });
   }
 });
+
+describe('new constructs run the same with the real toolchains', () => {
+  const src = parse(require('node:fs').readFileSync(require('node:path').join(__dirname, 'samples/neu.py'), 'utf8'), 'python').program;
+  // error messages are worded differently in every language
+  const strip = (t: string) => normalize(t).split('\n').filter((l) => !l.startsWith('Fehler:')).join('\n');
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(lang, async () => {
+      const expected = await runToText(src, lang);
+      const actual = runner.run(generate(src, lang).code, '');
+      expect(strip(actual)).toBe(strip(expected));
+      expect(actual).toContain('Fehler:');
+    });
+  }
+});

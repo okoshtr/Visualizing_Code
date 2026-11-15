@@ -870,6 +870,14 @@ export const externalModule = (lib: string) => lib.slice(4);
 
 export const HELPERS: Partial<Record<Lang, Record<string, { code: string; imports?: string[]; random?: boolean }>>> = {
   java: {
+    mapOf: {
+      code: `@SuppressWarnings("unchecked")
+static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
+    LinkedHashMap<K, V> map = new LinkedHashMap<>();
+    for (int i = 0; i + 1 < pairs.length; i += 2) map.put((K) pairs[i], (V) pairs[i + 1]);
+    return map;
+}`,
+    },
     readFile: {
       imports: ['java.nio.file.*'],
       code: `static String readFile(String name) {
@@ -911,6 +919,20 @@ export const HELPERS: Partial<Record<Lang, Record<string, { code: string; import
     },
   },
   javascript: {
+    toInt: {
+      code: `function toInt(text) {
+  const n = Number(text);
+  if (String(text).trim() === "" || !Number.isInteger(n)) throw new Error("Keine ganze Zahl: " + text);
+  return n;
+}`,
+    },
+    toFloat: {
+      code: `function toFloat(text) {
+  const n = Number(String(text).replace(",", "."));
+  if (String(text).trim() === "" || Number.isNaN(n)) throw new Error("Keine Zahl: " + text);
+  return n;
+}`,
+    },
     sumList: { code: `function sumList(list) {\n  return list.reduce((a, b) => a + b, 0);\n}` },
     minList: { code: `function minList(list) {\n  return list.reduce((a, b) => (b < a ? b : a));\n}` },
     maxList: { code: `function maxList(list) {\n  return list.reduce((a, b) => (b > a ? b : a));\n}` },

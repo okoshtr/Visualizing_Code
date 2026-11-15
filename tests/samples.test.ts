@@ -13,6 +13,10 @@ const EXPECTED: Record<string, string> = {
   'main.cpp': 'Summe: 43\n16 15 8 4 \nHallo Welt!\n5! = 120\n',
   'Program.cs': '3 ist ungerade\n6 ist gerade\n9 ist ungerade\n12 ist gerade\nAnzahl: 4\nBLÖCKE 6\n',
   'app.js': 'Fibonacci: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34\nDie 10. Zahl ist 55\nKATZE\nRest 2\n9 3\n',
+  'neu.py': 'Anna ist 12\nClara ist 11\nTrue 2\n0 3\n1 9\n2 4\n16 3 9\nFibonacci: 8\nFehler: "zwölf" ist keine ganze Zahl.\nZähler 3\nzwei oder drei\nHallo, Ada!\nMoin, Linus!\n',
+  'Neu.java': 'Äpfel: 5\nn = 6\nKeine Zahl: "abc" ist keine ganze Zahl.\nMathe: sehr gut\nKunst: weiter üben\n',
+  'neu.js': 'rot=1\nblau=2\ngrün=3\nWerktag\n4.5\nFehler: Division durch null\n',
+  'neu.bas': 'i = 9\nperfekt\ngut\nüben\n',
 };
 
 describe('hand-written samples', () => {

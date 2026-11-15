@@ -4,7 +4,7 @@ import { foldPlus } from '../generators/base';
 import type { Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt, TypeName } from '../ir';
 import { assignedNames, walkAllExprs, walkStmts } from '../ir';
 import { helperNames } from '../library';
-import { ParseError, type ParseResult, type Token, blankLineBefore, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
+import { ParseError, type ParseResult, type Token, blankLineBefore, caseCondition, endsCase, errorVarToMessage, hasInnerBreak, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
 import { normalize } from './normalize';
 
 type CLang = Exclude<Lang, 'python' | 'vba'>;
@@ -213,12 +213,35 @@ export function typeHint(type: string): TypeName | null {
     const inner = typeHint(arr[1]);
     return inner ? (`list<${inner}>` as TypeName) : null;
   }
+  const map = /^(?:java\.util\.|System\.Collections\.Generic\.)?(HashMap|LinkedHashMap|TreeMap|Map|Dictionary|map|unordered_map)<(.+)>$/.exec(t);
+  if (map) {
+    const parts = splitTypeArgs(map[2]);
+    const k = typeHint(parts[0] ?? '');
+    const v = typeHint(parts[1] ?? '');
+    return k && v ? (`dict<${k}|${v}>` as TypeName) : null;
+  }
   const gen = /^(?:java\.util\.|System\.Collections\.Generic\.)?(ArrayList|List|LinkedList|vector)<(.+)>$/.exec(t);
   if (gen) {
     const inner = typeHint(gen[2]);
     return inner ? (`list<${inner}>` as TypeName) : null;
   }
   return null;
+}
+
+function splitTypeArgs(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const c of s) {
+    if (c === '<') depth++;
+    if (c === '>') depth--;
+    if (c === ',' && depth === 0) {
+      out.push(cur.trim());
+      cur = '';
+    } else cur += c;
+  }
+  out.push(cur.trim());
+  return out;
 }
 
 class CParser {
@@ -416,8 +439,24 @@ class CParser {
     }
   }
 
+  /** Skips "<K, V>" (type parameters of a generic method). */
+  skipTypeParams() {
+    if (!this.is('<')) return;
+    let depth = 0;
+    do {
+      if (this.is('<')) depth++;
+      else if (this.is('>')) depth--;
+      else if (this.is('>>')) depth -= 2;
+      this.p++;
+    } while (depth > 0 && this.cur() !== 'eof');
+  }
+
   skipModifiers() {
     while (true) {
+      if (this.is('<') && (this.lang === 'java' || this.lang === 'csharp')) {
+        this.skipTypeParams();
+        continue;
+      }
       if (this.cur() === 'name' && MODIFIERS.has(this.tok.v) && !(this.lang === 'javascript' && this.tok.v !== 'async' && this.tok.v !== 'export')) {
         this.p++;
         continue;
@@ -466,6 +505,7 @@ class CParser {
     if (!type) this.fail('Typ erwartet.');
     if (this.is('~')) this.fail('Destruktoren haben noch keinen Block.');
     const name = this.name();
+    if (this.is('<') && this.lang === 'csharp') this.skipTypeParams();
     if (this.is('(')) {
       this.functionRest(type, name);
       return;
@@ -491,6 +531,7 @@ class CParser {
   functionRest(retType: string, name: string) {
     this.expect('(');
     const params: string[] = [];
+    const defaults: Ex[] = [];
     const paramTypes: string[] = [];
     while (!this.is(')')) {
       this.skipModifiers();
@@ -504,11 +545,12 @@ class CParser {
         if (this.isName('params') || this.isName('ref') || this.isName('out')) this.fail('ref/out/params haben noch keinen Block.');
         const t = this.parseType();
         if (!t) this.fail('Parametertyp erwartet.');
-        if (this.is('...')) this.fail('Variable Parameter haben noch keinen Block.');
+        // "Object... pairs" (varargs) only appears in helper functions, which are skipped
+        const varargs = this.eat('...');
         params.push(this.name());
-        paramTypes.push(t);
+        paramTypes.push(varargs ? `${t}[]` : t);
       }
-      if (this.is('=')) this.fail('Standardwerte für Parameter haben noch keinen Block.');
+      if (this.eat('=')) defaults[params.length - 1] = this.assignment();
       if (!this.eat(',')) break;
     }
     this.expect(')');
@@ -553,7 +595,7 @@ class CParser {
     }
     this.locals[name] = [...declared].filter((n) => !params.includes(n));
     const returns = retType !== 'void' && !(this.lang === 'javascript' && !hasValueReturn(body));
-    this.functions.push({ name, params, body, returns });
+    this.functions.push({ name, params, body, returns, ...(defaults.length ? { defaults } : {}) });
   }
 
   // ---- types ---------------------------------------------------------------------
@@ -763,9 +805,13 @@ class CParser {
           this.expect(';');
           return [{ k: 'continue' }];
         case 'do':
+          return [this.doStmt()];
         case 'switch':
+          return this.switchStmt();
         case 'try':
+          return [this.tryStmt()];
         case 'throw':
+          return [this.throwStmt()];
         case 'goto':
         case 'class':
         case 'yield':
@@ -944,6 +990,96 @@ class CParser {
     }
     this.expect('}');
     return { k: 'list', items, src: this.srcFrom(start) };
+  }
+
+  doStmt(): Stmt {
+    this.p++; // do
+    const body = this.body();
+    if (!this.eatName('while')) this.fail('"while" nach "do" erwartet.');
+    this.expect('(');
+    const cond = this.expr();
+    this.expect(')');
+    this.expect(';');
+    if (cond?.k === 'not') return { k: 'while', until: true, cond: cond.a, body, post: true };
+    return { k: 'while', until: false, cond, body, post: true };
+  }
+
+  tryStmt(): Stmt {
+    this.p++; // try
+    const body = this.block();
+    if (!this.eatName('catch')) this.fail('try ohne catch hat noch keinen Block.');
+    let name = '';
+    if (this.eat('(')) {
+      if (this.lang === 'javascript') name = this.name();
+      else {
+        this.eatName('const');
+        const t = this.parseType();
+        if (!t && !this.is('.')) this.fail('Fehlertyp erwartet.');
+        if (this.is('...')) this.p++;
+        if (this.cur() === 'name') name = this.name();
+      }
+      this.expect(')');
+    }
+    let handler = this.block();
+    if (this.isName('catch') || this.isName('finally')) this.fail('Mehrere catch- oder finally-Teile haben noch keinen Block.');
+    handler = errorVarToMessage(handler, name, this.lang);
+    return { k: 'try', body, handler };
+  }
+
+  throwStmt(): Stmt {
+    this.p++; // throw
+    const e = this.expr();
+    this.expect(';');
+    if (e?.k === 'pnew' && e.args.length <= 1) return { k: 'throw', value: e.args[0] ?? { k: 'str', v: 'Fehler' } };
+    if (e?.k === 'pcall' && e.args.length === 1) return { k: 'throw', value: e.args[0] };
+    return { k: 'throw', value: e };
+  }
+
+  /** switch -> chain of "falls / sonst falls / sonst" */
+  switchStmt(): Stmt[] {
+    const start = this.p;
+    this.p++; // switch
+    this.expect('(');
+    const subject = this.expr();
+    this.expect(')');
+    if (!subject || !['var', 'num', 'str', 'member'].includes(subject.k)) this.fail('switch über einen berechneten Wert hat noch keinen Block.');
+    this.expect('{');
+    const cases: { values: Ex[]; isDefault: boolean; body: Stmt[] }[] = [];
+    while (!this.is('}')) {
+      if (this.cur() === 'eof') this.fail('"}" fehlt.');
+      const c = { values: [] as Ex[], isDefault: false, body: [] as Stmt[] };
+      while (this.isName('case') || this.isName('default')) {
+        if (this.eatName('default')) c.isDefault = true;
+        else {
+          this.p++;
+          do c.values.push(this.ternary());
+          while (this.eat(','));
+        }
+        if (this.is('->')) this.fail('switch mit "->" hat noch keinen Block.');
+        this.expect(':');
+      }
+      if (!c.values.length && !c.isDefault) this.fail('"case" erwartet.');
+      while (!this.isName('case') && !this.isName('default') && !this.is('}')) {
+        if (this.cur() === 'eof') this.fail('"}" fehlt.');
+        c.body.push(...this.statementSafe());
+      }
+      cases.push(c);
+    }
+    this.expect('}');
+    void start;
+    const branches: { cond: Ex; body: Stmt[] }[] = [];
+    let elseBody: Stmt[] | null = null;
+    cases.forEach((c, i) => {
+      const last = i === cases.length - 1;
+      if (!last && !endsCase(c.body)) this.fail('switch mit Durchfallen (fall-through) hat noch keinen Block.');
+      let body = c.body;
+      if (body[body.length - 1]?.k === 'break') body = body.slice(0, -1);
+      if (hasInnerBreak(body)) this.fail('"break" innerhalb eines case hat noch keinen Block.');
+      if (c.isDefault) elseBody = body;
+      else branches.push({ cond: caseCondition(subject, c.values), body });
+    });
+    if (!branches.length) return elseBody ?? [];
+    return [{ k: 'if', branches, else: elseBody }];
   }
 
   ifStmt(): Stmt {
@@ -1313,7 +1449,11 @@ class CParser {
           break;
         case 'new': {
           this.p++;
-          const type = this.parseType();
+          let type = this.parseType();
+          if (!type && this.lang === 'javascript' && this.cur() === 'name') {
+            type = this.name();
+            while (this.is('.') && this.peek().t === 'name') type += this.toks[this.p++].v + this.name();
+          }
           if (!type) this.fail('Typ nach "new" erwartet.');
           let args: Ex[] = [];
           let init: Ex[] | undefined;

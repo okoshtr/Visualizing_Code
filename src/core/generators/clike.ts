@@ -35,6 +35,8 @@ export abstract class CLikeGen extends BaseGen {
   protected typed = true;
   private plan: DeclPlan = { inline: new Set(), top: [], declared: new Set() };
   private counters: string[] = [];
+  /** > 0 while generating the body of a "versuche" block. */
+  protected tryDepth = 0;
 
   // ---- language hooks -------------------------------------------------------------
   /** Type name for declarations; ctx 'param' is used for function parameters. */
@@ -190,7 +192,12 @@ export abstract class CLikeGen extends BaseGen {
         break;
       }
       case 'try':
-        this.open('try', () => this.body(s.body), false);
+        this.tryDepth++;
+        try {
+          this.open('try', () => this.body(s.body), false);
+        } finally {
+          this.tryDepth--;
+        }
         this.withCatch((name) => {
           if (this.allman) {
             this.emit('}');

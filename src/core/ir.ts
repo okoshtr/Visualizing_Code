@@ -136,7 +136,7 @@ export interface FunctionDef {
   defaults?: Ex[];
 }
 
-export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>`;
+export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>` | `dict<${string}>`;
 
 export interface ImportInfo {
   lang: Lang;

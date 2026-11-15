@@ -11,13 +11,13 @@ export class JavaGen extends CLikeGen {
 
   protected typeName(t: Ty): string {
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
-    if (isDict(t)) return `HashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
+    if (isDict(t)) return `LinkedHashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return { int: 'int', double: 'double', string: 'String', bool: 'boolean' }[t] ?? 'Object';
   }
 
   private boxed(t: Ty): string {
     if (isList(t)) return `ArrayList<${this.boxed(elemOf(t))}>`;
-    if (isDict(t)) return `HashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
+    if (isDict(t)) return `LinkedHashMap<${this.boxed(dictParts(t)[0])}, ${this.boxed(dictParts(t)[1])}>`;
     return BOX[t] ?? 'Object';
   }
 
@@ -38,10 +38,11 @@ export class JavaGen extends CLikeGen {
   }
 
   protected dictLiteral(e: Expr & { k: 'dict' }, _kt: Ty, vt: Ty): Code {
-    if (!e.entries.length) return ['new HashMap<>()', ATOM];
-    if (e.entries.length > 10) this.warn('Java: Map.of erlaubt höchstens 10 Einträge.');
+    // LinkedHashMap keeps the order of the entries (like Python and JavaScript)
+    if (!e.entries.length) return ['new LinkedHashMap<>()', ATOM];
+    this.useHelper('mapOf');
     const items = e.entries.flatMap((x) => [this.sub(x.key), x.value?.k === 'num' && vt === 'double' ? this.numberLiteral(x.value.v, true) : this.sub(x.value)]);
-    return [`new HashMap<>(Map.of(${items.join(', ')}))`, ATOM];
+    return [`mapOf(${items.join(', ')})`, ATOM];
   }
 
   protected dgetCode(dict: Ex, key: Ex): Code {
@@ -202,7 +203,7 @@ export class JavaGen extends CLikeGen {
     });
     const text = inner.join('\n');
     const out: string[] = [];
-    if (/\b(ArrayList|List|Arrays|Collections|Scanner|Random|HashMap|Map)\b/.test(text)) out.push('import java.util.*;');
+    if (/\b(ArrayList|List|Arrays|Collections|Scanner|Random|HashMap|LinkedHashMap|Map)\b/.test(text)) out.push('import java.util.*;');
     for (const imp of [...this.imports].sort()) out.push(`import ${imp};`);
     for (const imp of this.program.meta?.imports ?? []) if (imp.lang === 'java') out.push(`import ${imp.module};`);
     if (out.length) out.push('');

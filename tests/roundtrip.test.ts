@@ -69,3 +69,21 @@ describe('formatting survives code -> blocks -> code', () => {
     });
   }
 });
+
+describe('new constructs (dictionaries, try, do-while, tuples) in all languages', () => {
+  const src = parse(require('node:fs').readFileSync(require('node:path').join(__dirname, 'samples/neu.py'), 'utf8'), 'python').program;
+  for (const lang of LANGS) {
+    it(lang, () => {
+      const code = generate(src, lang).code;
+      const again = parse(code, lang);
+      expect(again.diagnostics).toEqual([]);
+      expect(raws(again.program)).toEqual([]);
+      expect(generate(again.program, lang).code).toBe(code);
+    });
+  }
+  it('through Blockly', () => {
+    const back = fromBlockly(JSON.parse(JSON.stringify(toBlockly(src)))).program;
+    back.meta = src.meta;
+    for (const lang of LANGS) expect(generate(back, lang).code).toBe(generate(src, lang).code);
+  });
+});

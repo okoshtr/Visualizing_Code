@@ -191,11 +191,16 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['Math.floor({0})', math('floor')],
     ['Math.trunc({0})', conv('int')],
     ['{0}.length', len('auto')],
+    ['{0}.get({1})', (h) => ({ k: 'index', list: h[0], index: h[1] })],
     ['parseInt(input({0}))', ask('int')],
     ['parseFloat(input({0}))', ask('float')],
     ['parseInt(prompt({0}))', ask('int')],
     ['parseFloat(prompt({0}))', ask('float')],
     ['parseInt({0})', conv('int')],
+    ['toInt({0})', conv('int')],
+    ['toFloat({0})', conv('float')],
+    ['toInt(input({0}))', ask('int')],
+    ['toFloat(input({0}))', ask('float')],
     ['parseFloat({0})', conv('float')],
     ['Number({0})', conv('float')],
     ['String({0})', conv('text')],
@@ -233,6 +238,7 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['UBound({0}) + 1', len('list')],
     ['InputBox({0})', ask('text')],
     ['IIf({0}, {1}, {2})', (h) => ({ k: 'cond', cond: h[0], a: h[1], b: h[2] })],
+    ['Err.Description', () => ({ k: 'errmsg' })],
     ['10 ^ {0}', math('pow10')],
   ],
 };
@@ -248,12 +254,14 @@ const STMT_PATTERNS: Record<Lang, [string, StmtBuilder][]> = {
     ['System.out.print({0})', print(false)],
     ['{0}.add({1})', listadd],
     ['{0}.set({1}, {2})', (h) => ({ k: 'listset', list: h[0], index: h[1], value: h[2] })],
+    ['{0}.put({1}, {2})', (h) => ({ k: 'dset', dict: h[0], key: h[1], value: h[2] })],
   ],
   csharp: [
     ['Console.WriteLine({0})', print(true)],
     ['Console.WriteLine()', print(true)],
     ['Console.Write({0})', print(false)],
     ['{0}.Add({1})', listadd],
+    ['{0}.Add({1}, {2})', (h) => ({ k: 'dset', dict: h[0], key: h[1], value: h[2] })],
   ],
   cpp: [['{0}.push_back({1})', listadd]],
   javascript: [
@@ -261,6 +269,7 @@ const STMT_PATTERNS: Record<Lang, [string, StmtBuilder][]> = {
     ['process.stdout.write({0})', print(false)],
     ['process.stdout.write(String({0}))', print(false)],
     ['{0}.push({1})', listadd],
+    ['{0}.set({1}, {2})', (h) => ({ k: 'dset', dict: h[0], key: h[1], value: h[2] })],
   ],
   vba: [],
 };
@@ -408,6 +417,17 @@ class Normalizer {
     return this.lang === 'vba' ? s.toLowerCase() : s;
   }
 
+  /** [[k, v], ...] or {{k, v}, ...} -> dictionary entries */
+  dictFromPairs(items: Ex[]): Expr | null {
+    const entries: { key: Ex; value: Ex }[] = [];
+    for (const it of items) {
+      const pair = it?.k === 'list' ? it.items : null;
+      if (!pair || pair.length !== 2) return null;
+      entries.push({ key: this.expr(pair[0]), value: this.expr(pair[1]) });
+    }
+    return { k: 'dict', entries };
+  }
+
   /** Arguments of a call of a user function: keyword arguments and default values are filled in. */
   callArgs(f: FunctionDef, e: Expr & { k: 'pcall' }): Ex[] {
     const args: Ex[] = e.args.map((a) => this.expr(a));
@@ -527,11 +547,15 @@ class Normalizer {
         if (e.kwargs) return this.raw(e);
         if (c.k === 'var') {
           if (this.lang === 'vba' && c.name.toLowerCase() === 'array') return { k: 'list', items: args };
+          // mapOf(k, v, ...) (Java helper) / NewDict(k, v, ...) (VBA helper)
+          if (/^(mapOf|newdict)$/i.test(c.name) && args.length % 2 === 0) return { k: 'dict', entries: pairsOf(args) };
+          if (this.lang === 'vba' && c.name.toLowerCase() === 'createobject' && args[0]?.k === 'str' && /dictionary/i.test(args[0].v)) return { k: 'dict', entries: [] };
           return { k: 'lib', lib: 'ext:', fn: c.name, args };
         }
         if (c.k === 'member') {
           const path = dottedName(c.obj);
           if (path && /^(List|Arrays|Set|Stream)$/.test(path) && /^(of|asList)$/.test(c.name)) return { k: 'list', items: args };
+          if (path === 'Map' && c.name === 'of' && args.length % 2 === 0) return { k: 'dict', entries: pairsOf(args) };
           if (path && this.importAliases.has(this.key(path.split('.')[0]))) return { k: 'lib', lib: `ext:${path}`, fn: c.name, args };
           return { k: 'method', obj: this.expr(c.obj), name: c.name, args };
         }
@@ -547,6 +571,15 @@ class Normalizer {
       }
       case 'pnew': {
         const t = e.type.replace(/<.*$/s, '').replace(/^(java\.util\.|System\.Collections\.Generic\.|std::)/, '');
+        if (['HashMap', 'LinkedHashMap', 'TreeMap', 'Map', 'Dictionary', 'map', 'unordered_map'].includes(t)) {
+          // { {k, v}, ... }  /  new Map([[k, v], ...])  /  new HashMap<>(Map.of(...))
+          if (e.init) return this.dictFromPairs(e.init) ?? this.raw(e);
+          if (!e.args.length) return { k: 'dict', entries: [] };
+          const inner = this.expr(e.args[0]);
+          if (inner?.k === 'dict') return inner;
+          if (inner?.k === 'list') return this.dictFromPairs(inner.items) ?? this.raw(e);
+          return this.raw(e);
+        }
         if (['ArrayList', 'List', 'LinkedList', 'vector'].includes(t)) {
           if (e.init) return { k: 'list', items: e.init.map((x) => this.expr(x)) };
           if (!e.args.length) return { k: 'list', items: [] };
@@ -586,6 +619,12 @@ class Normalizer {
     delete out.src;
     return out;
   }
+}
+
+function pairsOf(args: Ex[]): { key: Ex; value: Ex }[] {
+  const out: { key: Ex; value: Ex }[] = [];
+  for (let i = 0; i + 1 < args.length; i += 2) out.push({ key: args[i], value: args[i + 1] });
+  return out;
 }
 
 function isEntry(x: any): x is { key: Ex; value: Ex } {
@@ -739,6 +778,17 @@ function fixDictStatements(p: Program): Program {
       if (s.k === 'listset' && isD(s.list)) s = { k: 'dset', dict: s.list, key: s.index, value: s.value, gap: s.gap, trail: s.trail, id: s.id };
       if (s.k === 'libstmt' && s.lib === 'list' && s.fn === 'removeAt' && isD(s.args[0])) s = { ...s, lib: 'dict', fn: 'remove' };
       if (s.k === 'listadd' && isD(s.list)) s = { k: 'raw', code: '?', lang: p.meta?.sourceLang ?? 'python' };
+      // for (k of d.keys()) / d.keySet() / d.Keys  ->  for each key of d
+      if (s.k === 'foreach') {
+        const l = s.list;
+        if (l?.k === 'method' && !l.args.length && /^(keys|keySet)$/.test(l.name) && isD(l.obj)) s = { ...s, list: l.obj };
+        else if (l?.k === 'member' && /^keys$/i.test(l.name) && isD(l.obj)) s = { ...s, list: l.obj };
+        else if (l?.k === 'lib' && l.lib === 'dict' && l.fn === 'keys') s = { ...s, list: l.args[0] };
+      }
+      // C++: map<string, int> m = {{"a", 1}};
+      if (s.k === 'set' && s.value?.k === 'list' && s.value.items.length && s.value.items.every((x: Ex) => x?.k === 'list' && x.items.length === 2) && isDict(a.varType(s.name, place))) {
+        s = { ...s, value: { k: 'dict', entries: s.value.items.map((x: any) => ({ key: x.items[0], value: x.items[1] })) } };
+      }
       return s;
     });
   return { ...p, main: p.main ? fix(p.main, '') : null, functions: p.functions.map((f) => ({ ...f, body: fix(f.body, f.name) })) };
