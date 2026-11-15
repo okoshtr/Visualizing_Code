@@ -6,6 +6,7 @@ import * as De from 'blockly/msg/de';
 import { FieldMultilineInput } from '@blockly/field-multilineinput';
 import { LIBRARIES, type LibFn, findLibFn, isExternalLib, externalModule } from '../core/library';
 import { LANG_INFO, type Lang } from '../core/ir';
+import { findPackage, findPackageFn } from '../core/packages';
 
 // ---------------------------------------------------------------------------
 // Colours per category
@@ -125,6 +126,9 @@ function setMessages() {
   const M = Blockly.Msg as Record<string, string>;
   Object.assign(M, {
     CONTROLS_REPEAT_TITLE: 'wiederhole %1 mal',
+    // no default comment "Beschreibe diese Funktion …" on new functions (it would end up in the code)
+    PROCEDURES_DEFNORETURN_COMMENT: '',
+    PROCEDURES_DEFRETURN_COMMENT: '',
     CONTROLS_REPEAT_INPUT_DO: '',
     CONTROLS_WHILEUNTIL_INPUT_DO: '',
     CONTROLS_FOR_INPUT_DO: '',
@@ -429,6 +433,7 @@ function installBlocks() {
   installVariadic();
   installDictCreate();
   installClassBlocks();
+  installPackageBlocks();
   Blockly.common.defineBlocksWithJsonArray([
     {
       type: 'controls_dowhile',
@@ -758,6 +763,137 @@ function installClassBlocks() {
   };
 }
 
+// --- packages ---------------------------------------------------------------------
+
+const IMPORT_TYPES = new Set(['import_module', 'import_from']);
+const CALL_TYPES = new Set(['lib_expr', 'lib_stmt', 'method_expr', 'method_stmt', 'obj_new', 'procedures_callreturn', 'procedures_callnoreturn']);
+
+function installPackageBlocks() {
+  const langField = () => new Blockly.FieldDropdown(LANG_OPTIONS);
+  const moduleValidator = (v: string) => (/^[\p{L}_@][\p{L}\p{N}_.\-/@:]*$/u.test(v.trim()) ? v.trim() : null);
+  Blockly.Blocks['import_module'] = {
+    init(this: Blockly.Block) {
+      this.appendDummyInput()
+        .appendField('importiere Paket')
+        .appendField(new Blockly.FieldTextInput('pulp', moduleValidator), 'MODULE')
+        .appendField('als')
+        .appendField(new Blockly.FieldTextInput('pulp', (v: string) => (/^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(v.trim()) ? v.trim() : null)), 'ALIAS')
+        .appendField('für')
+        .appendField(langField(), 'LANG');
+      this.setPreviousStatement(true, 'Import');
+      this.setNextStatement(true, 'Import');
+      this.setStyle('library_blocks');
+      this.setTooltip('Macht ein Paket (eine Bibliothek) im Programm verfügbar, z. B. "import pulp" in Python. Danach findest du es in den Bibliotheks-Blöcken im ersten Auswahlfeld.');
+      this.setFieldValue(blockLang, 'LANG');
+    },
+  };
+  Blockly.Blocks['import_from'] = {
+    init(this: Blockly.Block) {
+      this.appendDummyInput()
+        .appendField('aus Paket')
+        .appendField(new Blockly.FieldTextInput('pulp', moduleValidator), 'MODULE')
+        .appendField('importiere')
+        .appendField(new Blockly.FieldTextInput('LpProblem, LpVariable'), 'NAMES')
+        .appendField('für')
+        .appendField(langField(), 'LANG');
+      this.setPreviousStatement(true, 'Import');
+      this.setNextStatement(true, 'Import');
+      this.setStyle('library_blocks');
+      this.setTooltip('Holt einzelne Funktionen aus einem Paket, z. B. "from pulp import LpProblem". Die Namen trennst du mit Kommas.');
+      this.setFieldValue(blockLang, 'LANG');
+    },
+  };
+  const importCheck = function (this: Blockly.BlockSvg) {
+    if (!this.workspace || this.workspace.isFlyout) return;
+    const prev = this.getPreviousBlock();
+    const next = this.getNextBlock();
+    const ok = (!prev || IMPORT_TYPES.has(prev.type)) && (!next || IMPORT_TYPES.has(next.type)) && !this.getSurroundParent();
+    this.setWarningText(ok ? null : 'Import-Blöcke stehen für sich (z. B. über "Wenn Programm startet") und nicht zwischen anderen Blöcken.');
+  };
+  Blockly.Blocks['import_module'].onchange = importCheck;
+  Blockly.Blocks['import_from'].onchange = importCheck;
+
+  // benannt <name> = <Wert>  (named argument, e.g. lowBound=0)
+  Blockly.common.defineBlocksWithJsonArray([
+    {
+      type: 'kwarg_value',
+      message0: 'benannt %1 = %2',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'name' },
+        { type: 'input_value', name: 'VALUE' },
+      ],
+      inputsInline: true,
+      output: null,
+      style: 'library_blocks',
+      tooltip: 'Ein Wert mit Namen für eine Funktion, z. B. lowBound = 0. Steck ihn in ein Feld eines Funktions-Blocks.',
+    },
+  ]);
+  Blockly.Blocks['kwarg_value'].onchange = function (this: Blockly.BlockSvg) {
+    if (!this.workspace || this.workspace.isFlyout) return;
+    const parent = this.getParent();
+    this.setWarningText(!parent || CALL_TYPES.has(parent.type) ? null : 'Ein benannter Wert gehört in ein Feld eines Funktions-Blocks.');
+  };
+
+  // Wert <LpMaximize> aus Paket <pulp>
+  Blockly.Blocks['lib_const'] = {
+    lib_: 'ext:pulp',
+    name_: 'LpMaximize',
+    init(this: any) {
+      const self = this;
+      this.lib_ = 'ext:pulp';
+      this.name_ = 'LpMaximize';
+      const libField = new Blockly.FieldDropdown(
+        function () {
+          const opts = packageLibOptions(self.workspace);
+          if (!opts.some((o) => o[1] === self.lib_)) opts.push([libLabel(self.lib_), self.lib_]);
+          return opts;
+        },
+        function (value: string) {
+          if (value !== self.lib_) {
+            self.lib_ = value;
+            const first = findPackage(moduleOf(value, self.workspace))?.values?.[0];
+            if (first) {
+              self.name_ = first;
+              self.setFieldValue(first, 'NAME');
+            }
+          }
+          return value;
+        },
+      );
+      const nameField = new Blockly.FieldDropdown(
+        function () {
+          const names = new Set([self.name_, ...(findPackage(moduleOf(self.lib_, self.workspace))?.values ?? [])]);
+          return [...[...names].map((n) => [n, n] as [string, string]), ['✎ anderer Wert …', '__other__']];
+        },
+        function (value: string) {
+          if (value === '__other__') {
+            Blockly.dialog.prompt('Name des Werts:', self.name_, (name) => {
+              if (name && /^[\p{L}_][\p{L}\p{N}_.]*$/u.test(name.trim())) {
+                self.name_ = name.trim();
+                self.setFieldValue(self.name_, 'NAME');
+              }
+            });
+            return null;
+          }
+          self.name_ = value;
+          return value;
+        },
+      );
+      this.appendDummyInput().appendField('Wert').appendField(nameField, 'NAME').appendField('aus').appendField(libField, 'LIB');
+      this.setOutput(true);
+      this.setStyle('library_blocks');
+      this.setTooltip('Ein fester Wert aus einem Paket, z. B. pulp.LpMaximize.');
+    },
+    saveExtraState(this: any) {
+      return { lib: this.lib_, name: this.name_ };
+    },
+    loadExtraState(this: any, s: any) {
+      this.lib_ = s?.lib ?? this.lib_;
+      this.name_ = s?.name ?? this.name_;
+    },
+  };
+}
+
 function installVariadic() {
   const make = (isStmt: boolean) => ({
     argCount_: 0,
@@ -811,7 +947,76 @@ export function registerExternal(lib: string, fn: string) {
 function libLabel(lib: string): string {
   if (!isExternalLib(lib)) return LIBRARIES.find((l) => l.id === lib)?.label ?? lib;
   const m = externalModule(lib);
-  return m ? m : 'Funktion';
+  return m ? `📦 ${m}` : 'Funktion';
+}
+
+/** Language of the editor; new "importiere Paket" blocks start with it. */
+let blockLang: Lang = 'python';
+export function setBlockLanguage(lang: Lang) {
+  blockLang = lang;
+}
+export const blockLanguage = () => blockLang;
+
+interface PackageRef {
+  /** Library id used by the blocks: "ext:<alias>" or "ext:<module>" (from-import). */
+  lib: string;
+  module: string;
+  names: string[];
+}
+
+/** Packages imported with "importiere Paket" blocks in the workspace. */
+export function workspacePackages(ws: Blockly.Workspace | null | undefined): PackageRef[] {
+  const out: PackageRef[] = [];
+  if (!ws) return out;
+  const target = (ws as any).targetWorkspace ?? ws;
+  for (const b of target.getAllBlocks(false) as Blockly.Block[]) {
+    if (b.type !== 'import_module' && b.type !== 'import_from') continue;
+    const module = String(b.getFieldValue('MODULE') ?? '').trim();
+    if (!module) continue;
+    if (b.type === 'import_module') {
+      const alias = String(b.getFieldValue('ALIAS') ?? '').trim() || module;
+      out.push({ lib: `ext:${alias}`, module, names: [] });
+    } else {
+      const names = String(b.getFieldValue('NAMES') ?? '')
+        .split(/[,;]/)
+        .map((x) => x.trim().split(/\s+as\s+/).pop()!)
+        .filter((x) => x && x !== '*');
+      const known = out.find((p) => p.lib === `ext:${module}`);
+      if (known) known.names.push(...names);
+      else out.push({ lib: `ext:${module}`, module, names });
+    }
+  }
+  return out;
+}
+
+/** Module name behind a library id ("ext:np" -> numpy if imported as np). */
+function moduleOf(lib: string, ws: Blockly.Workspace | null | undefined): string {
+  const ref = workspacePackages(ws).find((p) => p.lib === lib);
+  if (ref) return ref.module;
+  const m = externalModule(lib);
+  return KNOWN_ALIASES[m] ?? m;
+}
+
+const KNOWN_ALIASES: Record<string, string> = { np: 'numpy', pd: 'pandas', plt: 'matplotlib.pyplot', _: 'lodash' };
+
+function packageLibOptions(ws: Blockly.Workspace | null | undefined): [string, string][] {
+  const opts: [string, string][] = [];
+  const add = (label: string, id: string) => {
+    if (!opts.some((o) => o[1] === id)) opts.push([label, id]);
+  };
+  for (const p of workspacePackages(ws)) add(p.lib === `ext:${p.module}` ? `📦 ${p.module}` : `📦 ${p.module} (${externalModule(p.lib)})`, p.lib);
+  for (const lib of externalLibs.keys()) add(libLabel(lib), lib);
+  return opts;
+}
+
+/** Function names offered for an external library. */
+function packageFnNames(lib: string, ws: Blockly.Workspace | null | undefined): string[] {
+  const names = new Set<string>();
+  for (const p of workspacePackages(ws)) if (p.lib === lib) p.names.forEach((n) => names.add(n));
+  for (const n of externalLibs.get(lib) ?? []) names.add(n);
+  for (const f of findPackage(moduleOf(lib, ws))?.fns ?? []) names.add(f.name);
+  const values = new Set(findPackage(moduleOf(lib, ws))?.values ?? []);
+  return [...names].filter((n) => n && !values.has(n));
 }
 
 function fnsOf(lib: string, statement: boolean): LibFn[] {
@@ -838,7 +1043,7 @@ function installLibraryBlocks() {
       const libField = new Blockly.FieldDropdown(
         function () {
           const opts: [string, string][] = LIBRARIES.filter((l) => fnsOf(l.id, isStmt).length).map((l) => [l.label, l.id]);
-          for (const lib of externalLibs.keys()) opts.push([libLabel(lib), lib]);
+          for (const o of packageLibOptions(self.workspace)) if (!opts.some((x) => x[1] === o[1])) opts.push(o);
           if (!opts.some((o) => o[1] === self.lib_)) opts.push([libLabel(self.lib_), self.lib_]);
           return opts;
         },
@@ -849,7 +1054,8 @@ function installLibraryBlocks() {
               self.fn_ = fnsOf(value, isStmt)[0]?.id ?? '';
               self.argCount_ = findLibFn(value, self.fn_)?.params.length ?? 0;
             } else {
-              self.fn_ = [...(externalLibs.get(value) ?? [])][0] ?? 'funktion';
+              self.fn_ = packageFnNames(value, self.workspace)[0] ?? 'funktion';
+              self.argCount_ = findPackageFn(moduleOf(value, self.workspace), self.fn_)?.params?.length ?? self.argCount_;
             }
             self.setFieldValue(self.fn_, 'FN');
             self.updateArgs_();
@@ -864,7 +1070,7 @@ function installLibraryBlocks() {
             if (!opts.some((o) => o[1] === self.fn_)) opts.push([self.fn_, self.fn_]);
             return opts;
           }
-          const names = new Set([self.fn_, ...(externalLibs.get(self.lib_) ?? [])]);
+          const names = new Set([self.fn_, ...packageFnNames(self.lib_, self.workspace)]);
           return [...[...names].map((n) => [n, n] as [string, string]), ['✎ andere Funktion …', '__other__']];
         },
         function (this: Blockly.FieldDropdown, value: string) {
@@ -882,6 +1088,10 @@ function installLibraryBlocks() {
             self.fn_ = value;
             if (!isExternalLib(self.lib_)) {
               self.argCount_ = findLibFn(self.lib_, value)?.params.length ?? 0;
+              self.updateArgs_();
+            } else {
+              const known = findPackageFn(moduleOf(self.lib_, self.workspace), value);
+              if (known?.params) self.argCount_ = known.params.length;
               self.updateArgs_();
             }
           }
@@ -910,13 +1120,18 @@ function installLibraryBlocks() {
         head.removeField('PLUS');
         head.removeField('MINUS');
       }
+      const pkgFn = external ? findPackageFn(moduleOf(this.lib_, this.workspace), this.fn_) : undefined;
       rebuildArgs(
         this,
         count,
-        (i) => (def ? def.params[i].name : i === 0 ? 'mit' : ''),
+        (i) => (def ? def.params[i].name : pkgFn?.params?.[i] ?? (i === 0 ? 'mit' : '')),
         (i) => (def ? paramShadow(def.params[i]) : null),
       );
-      this.setTooltip(def?.tooltip ?? (def ? `${libLabel(this.lib_)}: ${def.label}` : `Funktion ${this.fn_} aus ${libLabel(this.lib_)}`));
+      const named = pkgFn?.named?.length ? ` Benannte Werte: ${pkgFn.named.join(', ')} (Block „benannt … = …“).` : '';
+      this.setTooltip(
+        def?.tooltip ??
+          (def ? `${libLabel(this.lib_)}: ${def.label}` : `${pkgFn?.tooltip ? pkgFn.tooltip + ' ' : ''}Funktion ${this.fn_} aus ${libLabel(this.lib_)}.${named} Mit + und − änderst du die Anzahl der Werte.`),
+      );
     },
     saveExtraState(this: any) {
       return { lib: this.lib_, fn: this.fn_, args: this.argCount_ };
@@ -925,7 +1140,7 @@ function installLibraryBlocks() {
       this.lib_ = s?.lib ?? this.lib_;
       this.fn_ = s?.fn ?? this.fn_;
       this.argCount_ = s?.args ?? findLibFn(this.lib_, this.fn_)?.params.length ?? 0;
-      if (isExternalLib(this.lib_)) registerExternal(this.lib_, this.fn_);
+      if (isExternalLib(this.lib_) && !this.workspace?.isFlyout) registerExternal(this.lib_, this.fn_);
       this.updateArgs_();
     },
     mutationToDom(this: any) {
@@ -1062,6 +1277,18 @@ export const TOOLBOX = {
         libBlock('list', 'sum', false),
         libBlock('file', 'read', false),
         libBlock('file', 'appendLine', true),
+        { kind: 'label', text: 'Pakete (z. B. pulp, numpy, pandas)' },
+        { kind: 'block', type: 'import_module', fields: { MODULE: 'pulp', ALIAS: 'pulp' } },
+        { kind: 'block', type: 'import_from', fields: { MODULE: 'pulp', NAMES: 'LpProblem, LpVariable' } },
+        {
+          kind: 'block',
+          type: 'lib_expr',
+          extraState: { lib: 'ext:pulp', fn: 'LpVariable', args: 2 },
+          fields: { LIB: 'ext:pulp', FN: 'LpVariable' },
+          inputs: { ARG0: txt('x'), ARG1: { block: { type: 'kwarg_value', fields: { NAME: 'lowBound' }, inputs: { VALUE: num(0) } } } },
+        },
+        { kind: 'block', type: 'kwarg_value', fields: { NAME: 'lowBound' }, inputs: { VALUE: num(0) } },
+        { kind: 'block', type: 'lib_const', extraState: { lib: 'ext:pulp', name: 'LpMaximize' }, fields: { LIB: 'ext:pulp', NAME: 'LpMaximize' } },
       ],
     },
     {
@@ -1144,10 +1371,40 @@ export function registerFunctionCategory(ws: Blockly.WorkspaceSvg) {
   });
 }
 
+/**
+ * Value inputs accept every block. Code read from a file can combine anything
+ * (e.g. "prob += x + y <= 4"); a type check would silently drop such blocks.
+ * The types still give the inputs and blocks their shape (hexagon for conditions).
+ */
+class LooseConnectionChecker extends Blockly.ConnectionChecker {
+  override doTypeChecks(a: Blockly.Connection, b: Blockly.Connection): boolean {
+    if (a.type === Blockly.ConnectionType.INPUT_VALUE || a.type === Blockly.ConnectionType.OUTPUT_VALUE) return true;
+    return super.doTypeChecks(a, b);
+  }
+}
+export const CONNECTION_CHECKER = 'vcLooseChecker';
+
+/** Import blocks stand on their own; Blockly would grey them out as "orphans". */
+export function keepImportsEnabled(ws: Blockly.Workspace) {
+  const undo = Blockly.Events.getRecordUndo();
+  Blockly.Events.setRecordUndo(false);
+  try {
+    for (const top of ws.getTopBlocks(false)) {
+      if (!IMPORT_TYPES.has(top.type)) continue;
+      for (let b: Blockly.Block | null = top; b && IMPORT_TYPES.has(b.type); b = b.getNextBlock()) {
+        if (b.hasDisabledReason('ORPHANED_BLOCK')) b.setDisabledReason(false, 'ORPHANED_BLOCK');
+      }
+    }
+  } finally {
+    Blockly.Events.setRecordUndo(undo);
+  }
+}
+
 let installed = false;
 export function installAll() {
   if (installed) return;
   installed = true;
+  Blockly.registry.register(Blockly.registry.Type.CONNECTION_CHECKER, CONNECTION_CHECKER, LooseConnectionChecker);
   setMessages();
   installBlocks();
 }

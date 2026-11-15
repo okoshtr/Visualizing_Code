@@ -275,6 +275,73 @@ class CParser {
 
   userClasses = new Set<string>();
 
+  /** import x from "m";  import * as x from "m";  import { a, b } from "m"; */
+  jsImport() {
+    this.p++;
+    if (this.cur() === 'str') {
+      // import "m"; (side effects only)
+      this.p++;
+      this.eat(';');
+      return;
+    }
+    let alias = '';
+    const names: string[] = [];
+    if (this.eat('*')) {
+      if (!this.eatName('as')) this.fail('"as" erwartet.');
+      alias = this.name();
+    } else if (this.is('{')) {
+      names.push(...this.jsNameList());
+    } else {
+      alias = this.name();
+      if (this.eat(',')) names.push(...this.jsNameList());
+    }
+    if (!this.eatName('from') || this.cur() !== 'str') this.fail('"from" erwartet.');
+    const module = this.toks[this.p++].v;
+    this.eat(';');
+    if (alias) this.imports.push({ lang: 'javascript', module, alias });
+    if (names.length) this.imports.push({ lang: 'javascript', module, alias: '', names });
+  }
+
+  /** { a, b as c } */
+  jsNameList(): string[] {
+    this.expect('{');
+    const names: string[] = [];
+    while (!this.is('}')) {
+      const n = this.name();
+      if (this.eatName('as') || this.eat(':')) names.push(`${n} as ${this.name()}`);
+      else names.push(n);
+      if (!this.eat(',')) break;
+    }
+    this.expect('}');
+    return names;
+  }
+
+  /** const { a, b } = require("m"); */
+  jsRequireNames(): boolean {
+    const save = this.p;
+    this.p++;
+    const names = this.jsNameList();
+    if (this.eat('=') && this.isName('require') && this.peek().v === '(' && this.peek(2).t === 'str' && this.peek(3).v === ')') {
+      const module = this.peek(2).v;
+      this.p += 4;
+      this.eat(';');
+      this.imports.push({ lang: 'javascript', module, alias: '', names });
+      return true;
+    }
+    this.p = save;
+    return false;
+  }
+
+  /** One argument of a call; C# also has named arguments "lowBound: 0". */
+  callArg(): Ex {
+    if (this.lang === 'csharp' && this.cur() === 'name' && this.peek().v === ':' && this.peek(2).v !== ':') {
+      const name = this.name();
+      this.p++;
+      return { k: 'kwarg', name, value: this.assignment() };
+    }
+    return this.assignment();
+  }
+
   /** Type hint, including objects of the user's classes. */
   hintOf(t: string): TypeName | null {
     const base = t.replace(/^(const\s+)?/, '').replace(/[&*]$/, '').trim();
@@ -381,6 +448,13 @@ class CParser {
         this.expect(';');
         if (isImport && !name.startsWith('java.') && !name.startsWith('static')) this.imports.push({ lang: 'java', module: name, alias: name.split('.').pop()! });
         return;
+      }
+      if (this.lang === 'javascript' && this.isName('import') && this.peek().v !== '(') {
+        this.jsImport();
+        return;
+      }
+      if (this.lang === 'javascript' && (this.isName('const') || this.isName('let') || this.isName('var')) && this.peek().v === '{') {
+        if (this.jsRequireNames()) return;
       }
       if (this.isName('using')) {
         this.p++;
@@ -1155,7 +1229,7 @@ class CParser {
         const args: Ex[] = [];
         if (this.eat('(')) {
           while (!this.is(')')) {
-            args.push(this.assignment());
+            args.push(this.callArg());
             if (!this.eat(',')) break;
           }
           this.expect(')');
@@ -1594,7 +1668,7 @@ class CParser {
         const args: Ex[] = [];
         while (!this.is(')')) {
           if (this.is('...')) this.fail('Spread hat noch keinen Block.');
-          args.push(this.assignment());
+          args.push(this.callArg());
           if (!this.eat(',')) break;
         }
         this.expect(')');
@@ -1669,7 +1743,7 @@ class CParser {
           if (this.is('(')) {
             this.p++;
             while (!this.is(')')) {
-              args.push(this.assignment());
+              args.push(this.callArg());
               if (!this.eat(',')) break;
             }
             this.expect(')');
@@ -1696,7 +1770,7 @@ class CParser {
           this.p++;
           const args: Ex[] = [];
           while (!this.is(')')) {
-            args.push(this.assignment());
+            args.push(this.callArg());
             if (!this.eat(',')) break;
           }
           this.expect(')');

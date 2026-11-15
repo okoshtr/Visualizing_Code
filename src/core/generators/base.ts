@@ -1,5 +1,5 @@
 import { type Analysis, MAIN, type Ty, elemOf, isList, isNumeric } from '../analysis';
-import type { ClassDef, Ex, Expr, Lang, Program, Stmt } from '../ir';
+import type { ClassDef, Ex, Expr, ImportInfo, Lang, Program, Stmt } from '../ir';
 import { walkStmts } from '../ir';
 import { HELPERS, externalModule, findLibFn, implFor, isExternalLib } from '../library';
 import { freshName, ident } from '../names';
@@ -285,6 +285,7 @@ export abstract class BaseGen {
       if (e.a?.k === 'bin' && e.a.op === 'MOD' && e.b?.k === 'num' && e.b.v === 0) this.zeroCompared.add(e.a);
       if (e.b?.k === 'bin' && e.b.op === 'MOD' && e.a?.k === 'num' && e.a.v === 0) this.zeroCompared.add(e.b);
     }
+    if (e.k === 'kwarg') return this.kwargCode(e.name, e.value);
     const [code, prec] = this.expr(e);
     if (e.id) this.exprCode.set(e.id, code);
     return prec < minPrec ? `(${code})` : code;
@@ -333,8 +334,20 @@ export abstract class BaseGen {
     return { k: 'num', v: 0 };
   }
 
-  protected libCode(lib: string, fn: string, args: Ex[]): Code {
-    if (isExternalLib(lib)) return this.externalCall(lib, fn, args);
+  /** Named argument: Python "n=v", C# "n: v", VBA "n:=v"; the others pass the value at its place. */
+  protected kwargCode(name: string, value: Ex): string {
+    const v = this.sub(value);
+    if (this.lang === 'python') return `${name}=${v}`;
+    if (this.lang === 'csharp') return `${name}: ${v}`;
+    if (this.lang === 'vba') return `${name}:=${v}`;
+    this.droppedNames.add(name);
+    return v;
+  }
+
+  private readonly droppedNames = new Set<string>();
+
+  protected libCode(lib: string, fn: string, args: Ex[], get = false): Code {
+    if (isExternalLib(lib)) return this.externalCall(lib, fn, args, get);
     const def = findLibFn(lib, fn);
     if (!def) {
       this.warn(`Unbekannte Bibliotheksfunktion ${lib}.${fn}.`);
@@ -361,12 +374,50 @@ export abstract class BaseGen {
     return [...this.helpers].map((h) => HELPERS[this.lang]![h].code);
   }
 
-  protected externalCall(lib: string, fn: string, args: Ex[]): Code {
+  /** Functions of external packages used in the code: module -> names. */
+  readonly usedExternal = new Map<string, Set<string>>();
+
+  protected findImport(module: string): ImportInfo | undefined {
+    const imports = this.program.meta?.imports ?? [];
+    return imports.find((i) => i.alias === module) ?? imports.find((i) => i.module === module);
+  }
+
+  /** Name of an external function as written in the code (prefix "modul." unless imported by name). */
+  protected externalName(lib: string, fn: string): string {
     const module = externalModule(lib);
-    const imp = this.program.meta?.imports?.find((i) => i.module === module || i.alias === module);
-    if (imp && imp.lang !== this.lang) this.warn(`Die Bibliothek "${module}" gibt es nur in ${langLabel(imp.lang)}.`);
-    const prefix = module ? `${imp?.lang === this.lang ? imp.alias : module}.` : '';
-    return [`${prefix}${fn}(${this.args(args)})`, ATOM];
+    if (!module) return fn;
+    const imp = this.findImport(module);
+    const realModule = imp?.module ?? module;
+    const imports = (this.program.meta?.imports ?? []).filter((i) => i.lang === this.lang && i.module === realModule);
+    // "from pulp import LpVariable": used without prefix
+    const byName = imports.find((i) => !i.alias && i.names?.some((n) => n === '*' || n.split(/\s+as\s+/).pop() === fn));
+    const fromOnly = imports.length > 0 && imports.every((i) => !i.alias && i.names);
+    const fromImp = byName ?? (fromOnly ? imports[0] : undefined);
+    if (fromImp) {
+      if (!this.usedExternal.has(fromImp.module)) this.usedExternal.set(fromImp.module, new Set());
+      this.usedExternal.get(fromImp.module)!.add(fn);
+      return fn;
+    }
+    return `${imp?.lang === this.lang && imp.alias ? imp.alias : module}.${fn}`;
+  }
+
+  protected externalCall(lib: string, fn: string, args: Ex[], get = false): Code {
+    const name = this.externalName(lib, fn);
+    return [get ? name : `${name}(${this.args(args)})`, ATOM];
+  }
+
+  /** Comments at the start of the main program (a file header): [header, rest]. */
+  protected splitHeader(main: Stmt[]): [Stmt[], Stmt[]] {
+    let i = 0;
+    while (i < main.length && main[i].k === 'comment') i++;
+    return [main.slice(0, i), main.slice(i)];
+  }
+
+  /** "from x import a, b": the imported names plus the ones the program uses. */
+  protected importedNames(imp: ImportInfo): string[] {
+    const names = [...(imp.names ?? [])];
+    for (const fn of this.usedExternal.get(imp.module) ?? []) if (!names.includes('*') && !names.some((n) => n.split(/\s+as\s+/).pop() === fn)) names.push(fn);
+    return names;
   }
 
   protected rawCode(code: string, lang: Lang): Code {
@@ -395,6 +446,12 @@ export abstract class BaseGen {
 
   protected result(code: string): GenResult {
     for (const w of this.a.warnings) this.warnings.add(w);
+    if (this.droppedNames.size) {
+      this.warnings.add(`Benannte Werte (${[...this.droppedNames].join(', ')}) gibt es in ${langLabel(this.lang)} nicht; die Werte werden an ihrer Stelle übergeben.`);
+    }
+    for (const imp of this.program.meta?.imports ?? []) {
+      if (imp.lang !== this.lang) this.warnings.add(`Das Paket "${imp.module}" gibt es nur in ${langLabel(imp.lang)}; der Code dafür wird nur übertragen.`);
+    }
     if (!this.program.main) this.warnings.add('Es gibt keinen Block "Wenn Programm startet" - das Hauptprogramm ist leer.');
     const marked = code.replace(/\n{3,}/g, '\n\n').trimEnd().split('\n');
     const own = new Map<string, [number, number]>();

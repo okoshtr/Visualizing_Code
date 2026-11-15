@@ -530,13 +530,29 @@ export function analyze(program: Program): Analysis {
     if (hint) retTypes.set(f.name, hint);
   }
 
+  // Variables holding values of external packages have no known type; that is not a mistake.
+  const fromPackage = new Set<string>();
+  for (let round = 0; round < 4; round++) {
+    const before = fromPackage.size;
+    for (const p of places) {
+      walkStmts(p.body, (s) => {
+        if (s.k !== 'set' && s.k !== 'change') return;
+        const value = s.k === 'set' ? s.value : s.by;
+        const json = JSON.stringify(value ?? null);
+        const mentions = json.includes('"lib":"ext:') || [...fromPackage].some((n) => json.includes(`"k":"var","name":${JSON.stringify(n)}`));
+        if (mentions) fromPackage.add(s.name);
+      });
+    }
+    if (fromPackage.size === before) break;
+  }
+
   const varType = (name: string, place: string): Ty => {
     let t = rawVarType(name, place);
     if (t === '?' || t === 'list<?>') {
       const u = usage.get(keyOf(name, place));
       if (u) t = t === 'list<?>' && !isList(u) ? t : unify(t, u);
     }
-    if (t === 'any' && !warnings.some((w) => w.includes(`"${name}"`)))
+    if (t === 'any' && !fromPackage.has(name) && !warnings.some((w) => w.includes(`"${name}"`)))
       warnings.push(`Die Variable "${name}" enthält unterschiedliche Arten von Werten (z. B. Zahl und Text).`);
     return resolveTy(t);
   };

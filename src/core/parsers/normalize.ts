@@ -5,7 +5,7 @@
 import { analyze, isDict, isList } from '../analysis';
 import { foldPlus } from '../generators/base';
 import type { Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
-import { CTOR, exprEquals, methodPlace } from '../ir';
+import { CTOR, assignedNames, exprEquals, methodPlace } from '../ir';
 import { LIBRARIES, implFor } from '../library';
 import type { ParseResult } from './common';
 import { parseCLikeExpr } from './clike';
@@ -403,6 +403,9 @@ class Normalizer {
   userFns: Map<string, FunctionDef>;
   classNames: Map<string, string>;
   importAliases: Map<string, string>;
+  /** "from pulp import LpVariable": LpVariable -> pulp */
+  fromNames = new Map<string, string>();
+  starModule: string | null = null;
   diagnostics: Diagnostic[] = [];
 
   constructor(
@@ -412,7 +415,42 @@ class Normalizer {
     const key = (s: string) => (lang === 'vba' ? s.toLowerCase() : s);
     this.userFns = new Map(program.functions.map((f) => [key(f.name), f]));
     this.classNames = new Map((program.classes ?? []).map((c) => [key(c.name), c.name]));
-    this.importAliases = new Map((program.meta?.imports ?? []).map((i) => [key(i.alias), i.module]));
+    this.importAliases = new Map((program.meta?.imports ?? []).filter((i) => i.alias).map((i) => [key(i.alias), i.module]));
+    const addAll = (names: Iterable<string>) => {
+      for (const n of names) this.knownNames.add(key(n));
+    };
+    addAll(assignedNames(program.main ?? []));
+    for (const f of program.functions) addAll([...f.params, ...assignedNames(f.body)]);
+    for (const c of program.classes ?? []) addAll([...c.ctorParams, ...assignedNames(c.ctor), ...c.methods.flatMap((m) => [...m.params, ...assignedNames(m.body)])]);
+    addAll(Object.keys(program.meta?.types ?? {}).map((k) => k.slice(k.indexOf(':') + 1)));
+    for (const imp of program.meta?.imports ?? []) {
+      for (const n of imp.names ?? []) {
+        if (n === '*') this.starModule ??= imp.module;
+        else this.fromNames.set(key(n.split(/\s+as\s+/).pop()!), imp.module);
+      }
+    }
+  }
+
+  /** Names that are variables, parameters, functions or classes of the program. */
+  knownNames = new Set<string>();
+
+  /** Is "a.b.c" a path into a package (imported alias or an unknown name like JsonConvert)? */
+  isPackagePath(path: string | null): boolean {
+    if (!path) return false;
+    const root = this.key(path.split('.')[0]);
+    if (this.importAliases.has(root)) return true;
+    return /^[A-Z]/.test(path) && !this.knownNames.has(root) && !this.classNames.has(root) && !this.userFns.has(root);
+  }
+
+  /** Library id of a free function: imported by name ("from x import f") or unknown. */
+  freeLib(name: string): string {
+    const m = this.fromNames.get(this.key(name)) ?? this.starModule;
+    return `ext:${m ?? ''}`;
+  }
+
+  /** Arguments of a call that is not a user function: named arguments become "kwarg" values. */
+  plainArgs(e: Expr & { k: 'pcall' }): Ex[] {
+    return [...e.args.map((a) => this.expr(a)), ...Object.entries(e.kwargs ?? {}).map(([name, value]): Expr => ({ k: 'kwarg', name, value: this.expr(value) }))];
   }
 
   key(s: string) {
@@ -439,14 +477,20 @@ class Normalizer {
   }
 
   /** Arguments of a call of a user function: keyword arguments and default values are filled in. */
-  callArgs(f: FunctionDef, e: Expr & { k: 'pcall' }): Ex[] {
-    const args: Ex[] = e.args.map((a) => this.expr(a));
-    for (const [name, value] of Object.entries(e.kwargs ?? {})) {
-      const i = f.params.indexOf(name);
+  callArgs(f: { params: string[]; defaults?: Ex[] }, e: Expr & { k: 'pcall' }): Ex[] {
+    const named: Record<string, Ex> = { ...(e.kwargs ?? {}) };
+    const positional: Ex[] = [];
+    for (const a of e.args) {
+      if (a?.k === 'kwarg') named[a.name] = a.value;
+      else positional.push(a);
+    }
+    const args: Ex[] = positional.map((a) => this.expr(a));
+    for (const [name, value] of Object.entries(named)) {
+      const i = f.params.findIndex((p) => this.key(p) === this.key(name));
       if (i >= 0) args[i] = this.expr(value);
     }
     for (let i = 0; i < f.params.length; i++) if (args[i] === undefined) args[i] = f.defaults?.[i] ? this.expr(f.defaults[i]) : null;
-    return args.slice(0, Math.max(f.params.length, e.args.length));
+    return args.slice(0, Math.max(f.params.length, positional.length));
   }
 
   raw(e: Expr): Expr {
@@ -526,17 +570,17 @@ class Normalizer {
     if (e.k === 'pcall') {
       const c = e.callee;
       const fn = c.k === 'var' ? this.userFns.get(this.key(c.name)) : undefined;
-      const args = fn ? this.callArgs(fn, e) : e.args.map((a) => this.expr(a));
+      const args = fn ? this.callArgs(fn, e) : this.plainArgs(e);
       if (c.k === 'var') {
         const f = fn;
         if (f && !f.returns) return { k: 'callstmt', name: f.name, args };
         const m = this.lang === 'vba' ? this.vbaMethod(c.name) : null;
         if (m && args.length) return { k: 'methodstmt', obj: args[0], name: m, args: args.slice(1) };
-        return { k: 'libstmt', lib: 'ext:', fn: c.name, args };
+        return { k: 'libstmt', lib: this.freeLib(c.name), fn: c.name, args };
       }
       if (c.k === 'member') {
         const path = dottedName(c.obj);
-        if (path && this.importAliases.has(this.key(path.split('.')[0]))) return { k: 'libstmt', lib: `ext:${path}`, fn: c.name, args };
+        if (path && this.isPackagePath(path)) return { k: 'libstmt', lib: `ext:${path}`, fn: c.name, args };
         return { k: 'methodstmt', obj: this.expr(c.obj), name: c.name, args };
       }
     }
@@ -558,24 +602,24 @@ class Normalizer {
         // Konto("Ada") / NeuKonto("Ada") (VBA): a new object
         if (c.k === 'var') {
           const cls = this.classNames.get(this.key(c.name)) ?? (this.lang === 'vba' && /^neu/i.test(c.name) ? this.classNames.get(this.key(c.name.slice(3))) : undefined);
-          if (cls) return { k: 'new', cls, args: e.args.map((a) => this.expr(a)) };
+          const def = cls ? this.program.classes!.find((x) => x.name === cls)! : null;
+          if (def) return { k: 'new', cls: def.name, args: this.callArgs({ params: def.ctorParams }, e) };
           const m = this.lang === 'vba' ? this.vbaMethod(c.name) : null;
           if (m && e.args.length) return { k: 'method', obj: this.expr(e.args[0]), name: m, args: e.args.slice(1).map((a) => this.expr(a)) };
         }
-        const args = e.args.map((a) => this.expr(a));
-        if (e.kwargs) return this.raw(e);
+        const args = this.plainArgs(e);
         if (c.k === 'var') {
           if (this.lang === 'vba' && c.name.toLowerCase() === 'array') return { k: 'list', items: args };
           // mapOf(k, v, ...) (Java helper) / NewDict(k, v, ...) (VBA helper)
           if (/^(mapOf|newdict)$/i.test(c.name) && args.length % 2 === 0) return { k: 'dict', entries: pairsOf(args) };
           if (this.lang === 'vba' && c.name.toLowerCase() === 'createobject' && args[0]?.k === 'str' && /dictionary/i.test(args[0].v)) return { k: 'dict', entries: [] };
-          return { k: 'lib', lib: 'ext:', fn: c.name, args };
+          return { k: 'lib', lib: this.freeLib(c.name), fn: c.name, args };
         }
         if (c.k === 'member') {
           const path = dottedName(c.obj);
           if (path && /^(List|Arrays|Set|Stream)$/.test(path) && /^(of|asList)$/.test(c.name)) return { k: 'list', items: args };
           if (path === 'Map' && c.name === 'of' && args.length % 2 === 0) return { k: 'dict', entries: pairsOf(args) };
-          if (path && this.importAliases.has(this.key(path.split('.')[0]))) return { k: 'lib', lib: `ext:${path}`, fn: c.name, args };
+          if (path && this.isPackagePath(path)) return { k: 'lib', lib: `ext:${path}`, fn: c.name, args };
           return { k: 'method', obj: this.expr(c.obj), name: c.name, args };
         }
         return this.raw(e);
@@ -621,6 +665,16 @@ class Normalizer {
       }
       case 'pin':
         return { k: 'lib', lib: 'text', fn: 'contains', args: [this.expr(e.b), this.expr(e.a)] };
+      case 'member': {
+        // pulp.LpMaximize: a value from a package
+        const path = dottedName(e.obj);
+        if (path && this.isPackagePath(path)) return { k: 'lib', lib: `ext:${path}`, fn: e.name, args: [], get: true };
+        return this.children(e);
+      }
+      case 'var':
+        // "from pulp import LpMaximize": the name alone
+        if (this.fromNames.has(this.key(e.name)) && !this.userFns.has(this.key(e.name))) return { k: 'lib', lib: `ext:${this.fromNames.get(this.key(e.name))}`, fn: e.name, args: [], get: true };
+        return this.children(e);
       case 'pbin':
       case 'punary':
       case 'plambda':

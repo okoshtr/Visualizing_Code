@@ -1,6 +1,8 @@
 import '../ui/styles.css';
 import { BlockEditor, type EditorDocument } from '../ui/editor';
 import { LANG_INFO, langFromFileName, type Lang } from '../core/ir';
+import { generate } from '../core/generators';
+import { parse } from '../core/parsers';
 
 declare const __ARTIFACT__: boolean;
 
@@ -134,3 +136,5 @@ else {
   import('../core/examples').then(({ EXAMPLES }) => editor.loadProgram(structuredClone(EXAMPLES.find((e) => e.id === first)!.program), false));
 }
 (window as any).vcEditor = editor;
+// for the browser checks (scripts/ui-check.mjs)
+(window as any).vcCore = { parse, generate, langFromFileName };

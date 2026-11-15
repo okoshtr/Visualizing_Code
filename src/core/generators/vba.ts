@@ -91,7 +91,6 @@ export class VbaGen extends BaseGen {
     for (const c of classProcs) out.push(...c, '');
     for (const f of fns) out.push(...f, '');
     out.push(...main);
-    for (const imp of this.program.meta?.imports ?? []) if (imp.lang !== 'vba') this.warn(`Die Bibliothek "${imp.module}" gibt es nur in ${imp.lang}.`);
     return this.result(out.join('\n'));
   }
 
@@ -252,8 +251,7 @@ export class VbaGen extends BaseGen {
         break;
       case 'libstmt':
         if (s.lib.startsWith('ext:')) {
-          const mod = s.lib.slice(4);
-          this.emit(`${mod ? mod + '.' : ''}${s.fn}${s.args.length ? ' ' + this.args(s.args) : ''}`);
+          this.emit(`${this.externalName(s.lib, s.fn)}${s.args.length ? ' ' + this.args(s.args) : ''}`);
         } else this.emit(this.libCode(s.lib, s.fn, s.args)[0]);
         break;
       case 'methodstmt': {
@@ -408,7 +406,7 @@ export class VbaGen extends BaseGen {
       case 'call':
         return [`${this.id(e.name)}(${this.args(e.args)})`, ATOM];
       case 'lib':
-        return this.libCode(e.lib, e.fn, e.args);
+        return this.libCode(e.lib, e.fn, e.args, e.get);
       case 'method': {
         const cls = this.isClassType(e.obj);
         if (cls) return [`${cls}_${e.name}(${this.args([e.obj, ...e.args])})`, ATOM];

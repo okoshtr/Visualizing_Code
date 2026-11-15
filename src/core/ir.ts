@@ -62,7 +62,9 @@ export type Expr = Node &
     /** Call of a user-defined function that returns a value. */
     | { k: 'call'; name: string; args: Ex[] }
     /** Library function: catalog entry (lib = 'math' | 'text' | ...) or external ("ext:numpy"). */
-    | { k: 'lib'; lib: string; fn: string; args: Ex[] }
+    | { k: 'lib'; lib: string; fn: string; args: Ex[]; get?: boolean }
+    /** Named argument "name = value" (only inside the arguments of a call). */
+    | { k: 'kwarg'; name: string; value: Ex }
     /** Method call on an object that is not covered by the catalog, e.g. obj.doSomething(x). */
     | { k: 'method'; obj: Ex; name: string; args: Ex[] }
     /** Attribute access, e.g. obj.field. */
@@ -148,8 +150,10 @@ export interface ImportInfo {
   lang: Lang;
   /** Module as written in the source, e.g. "numpy". */
   module: string;
-  /** Name used in code, e.g. "np" for "import numpy as np". */
+  /** Name used in code, e.g. "np" for "import numpy as np" ("" for "from x import a"). */
   alias: string;
+  /** "from pulp import LpProblem, LpVariable": the imported names. */
+  names?: string[];
 }
 
 export interface ProgramMeta {
@@ -302,6 +306,8 @@ export function exprChildren(e: Expr): Ex[] {
       return [e.obj, ...e.args];
     case 'member':
       return [e.obj];
+    case 'kwarg':
+      return [e.value];
     case 'pcall':
       return [e.callee, ...e.args, ...Object.values(e.kwargs ?? {})];
     case 'pslice':

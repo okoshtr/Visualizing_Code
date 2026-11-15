@@ -1,7 +1,7 @@
 // Conversion between the program model (IR) and Blockly's JSON serialization.
 // This module has no dependency on Blockly itself, so it can run in Node.
 
-import type { ClassDef, Ex, Expr, FunctionDef, Lang, Program, Stmt } from './ir';
+import type { ClassDef, Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt } from './ir';
 import { walkStmts } from './ir';
 import { findLibFn } from './library';
 
@@ -42,6 +42,24 @@ const COMPARE = new Set(['EQ', 'NEQ', 'LT', 'LTE', 'GT', 'GTE']);
 
 // ---------------------------------------------------------------------------
 // IR -> Blockly
+
+const IMPORT_TYPES = new Set(['import_module', 'import_from']);
+
+/** Stack of "importiere Paket" blocks for the imports of a program. */
+export function importBlocks(imports: ImportInfo[], uid: () => string = () => `i${Math.random().toString(36).slice(2, 10)}`): BlockState | undefined {
+  let first: BlockState | undefined;
+  let last: BlockState | undefined;
+  for (const imp of imports) {
+    const b: BlockState =
+      !imp.alias && imp.names
+        ? { type: 'import_from', id: uid(), fields: { MODULE: imp.module, NAMES: imp.names.join(', '), LANG: imp.lang } }
+        : { type: 'import_module', id: uid(), fields: { MODULE: imp.module, ALIAS: imp.alias || imp.module, LANG: imp.lang } };
+    if (!first) first = b;
+    if (last) last.next = { block: b };
+    last = b;
+  }
+  return first;
+}
 
 export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState {
   let counter = 0;
@@ -140,6 +158,7 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
       case 'call':
         return { type: 'procedures_callreturn', id, extraState: { name: e.name, params: fnParams.get(e.name) ?? [] }, inputs: argInputs(e.args) };
       case 'lib':
+        if (e.get) return { type: 'lib_const', id, extraState: { lib: e.lib, name: e.fn }, fields: { LIB: e.lib, NAME: e.fn } };
         return { type: 'lib_expr', id, fields: { LIB: e.lib, FN: e.fn }, extraState: { lib: e.lib, fn: e.fn, args: e.args.length }, inputs: argInputs(e.args, libShadow(e.lib, e.fn)) };
       case 'method':
         return { type: 'method_expr', id, fields: { NAME: e.name }, extraState: { args: e.args.length }, inputs: { ...inputs([['OBJ', e.obj]]), ...argInputs(e.args) } };
@@ -160,6 +179,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         return { type: 'dict_get', id, inputs: inputs([['DICT', e.dict], ['KEY', e.key, textShadow('')]]) };
       case 'self':
         return { type: 'self_obj', id };
+      case 'kwarg':
+        return { type: 'kwarg_value', id, fields: { NAME: e.name }, inputs: inputs([['VALUE', e.value, numShadow(0)]]) };
       case 'new':
         return { type: 'obj_new', id, fields: { CLASS: e.cls }, extraState: { args: e.args.length }, inputs: argInputs(e.args) };
       case 'raw':
@@ -267,6 +288,13 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
     if (!pos) y += height;
   };
 
+  const imp = importBlocks(program.meta?.imports ?? [], uid);
+  if (imp) {
+    let n = 0;
+    for (let b: BlockState | undefined = imp; b; b = b.next?.block) n++;
+    place('imports', imp, n * 44 + 40);
+    top.push(imp);
+  }
   if (program.main) {
     const b: BlockState = { type: 'event_start', id: uid() };
     const c = chain(program.main);
@@ -456,6 +484,10 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return withId({ k: 'dget', dict: e(inp(b, 'DICT')), key: e(inp(b, 'KEY')) });
       case 'self_obj':
         return withId({ k: 'self' });
+      case 'kwarg_value':
+        return withId({ k: 'kwarg', name: String(field(b, 'NAME') ?? 'name'), value: e(inp(b, 'VALUE')) });
+      case 'lib_const':
+        return withId({ k: 'lib', lib: String(b.extraState?.lib ?? field(b, 'LIB') ?? 'ext:'), fn: String(b.extraState?.name ?? field(b, 'NAME') ?? 'wert'), args: [], get: true });
       case 'obj_new':
         return withId({ k: 'new', cls: String(field(b, 'CLASS') ?? 'Objekt'), args: argList(b, argCount(b)) });
       case 'code_expr':
@@ -548,7 +580,24 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
       .split(/[,;\s]+/)
       .map((x) => x.trim())
       .filter(Boolean);
+  const imports: ImportInfo[] = [];
   for (const b of ws.blocks?.blocks ?? []) {
+    if (IMPORT_TYPES.has(b.type)) {
+      for (let m: BlockState | undefined = b; m && IMPORT_TYPES.has(m.type); m = m.next?.block) {
+        if (m.enabled === false || m.disabledReasons?.includes('MANUALLY_DISABLED')) continue;
+        const module = String(field(m, 'MODULE') ?? '').trim();
+        if (!module) continue;
+        const lang = (field(m, 'LANG') ?? 'python') as Lang;
+        const names = String(field(m, 'NAMES') ?? '')
+          .split(/[,;]/)
+          .map((x) => x.trim().replace(/\s+/g, ' '))
+          .filter(Boolean);
+        if (m.type === 'import_from') imports.push({ lang, module, alias: '', names });
+        else imports.push({ lang, module, alias: String(field(m, 'ALIAS') ?? '').trim() || module });
+      }
+      if (!layout.imports) layout.imports = { x: b.x ?? 0, y: b.y ?? 0 };
+      continue;
+    }
     if (b.type === 'class_def') {
       if (b.enabled === false) continue;
       const c: ClassDef = { id: b.id, name: String(field(b, 'NAME') ?? 'Klasse'), fields: [], ctorParams: [], ctor: [], methods: [] };
@@ -594,5 +643,5 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
       layout[`fn:${name}`] = { x: b.x ?? 0, y: b.y ?? 0 };
     }
   }
-  return { program: { main, mainId, functions, ...(classes.length ? { classes } : {}) }, layout };
+  return { program: { main, mainId, functions, ...(classes.length ? { classes } : {}), meta: { imports } }, layout };
 }

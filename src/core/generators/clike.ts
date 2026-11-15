@@ -547,7 +547,7 @@ export abstract class CLikeGen extends BaseGen {
       case 'call':
         return [`${this.id(e.name)}(${this.args(e.args)})`, ATOM];
       case 'lib':
-        return this.libCode(e.lib, e.fn, e.args);
+        return this.libCode(e.lib, e.fn, e.args, e.get);
       case 'method':
         return [`${this.memberPrefix(e.obj)}${e.name}(${this.args(e.args)})`, ATOM];
       case 'member':

@@ -224,7 +224,9 @@ export class JavaScriptGen extends CLikeGen {
     });
     const out: string[] = [];
     for (const imp of this.program.meta?.imports ?? []) {
-      if (imp.lang === 'javascript') out.push(`const ${imp.alias} = require(${JSON.stringify(imp.module)});`);
+      if (imp.lang !== 'javascript') continue;
+      if (!imp.alias && imp.names) out.push(`const { ${this.importedNames(imp).map((n) => n.replace(/\s+as\s+/, ': ')).join(', ')} } = require(${JSON.stringify(imp.module)});`);
+      else out.push(`const ${imp.alias} = require(${JSON.stringify(imp.module)});`);
     }
     if (out.length) out.push('');
     for (const part of [globals, helpers, ...classes, ...fns]) if (part.length) out.push(...part, '');

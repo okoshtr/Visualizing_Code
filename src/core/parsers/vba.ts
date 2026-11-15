@@ -609,7 +609,7 @@ class VbaParser {
           args.push(null);
           continue;
         }
-        args.push(this.expr());
+        args.push(this.callArg());
         if (!this.eat(',')) break;
       }
       this.lineEnd();
@@ -895,6 +895,16 @@ class VbaParser {
     return base;
   };
 
+  /** One argument of a call, also named: "lowBound:=0". */
+  callArg(): Ex {
+    if (this.cur() === 'name' && this.peek().v === ':=') {
+      const name = this.name();
+      this.p++;
+      return { k: 'kwarg', name, value: this.expr() };
+    }
+    return this.expr();
+  }
+
   postfix(): Ex {
     const start = this.p;
     let e = this.primary();
@@ -903,7 +913,7 @@ class VbaParser {
         this.p++;
         const args: Ex[] = [];
         while (!this.is(')')) {
-          args.push(this.expr());
+          args.push(this.callArg());
           if (!this.eat(',')) break;
         }
         this.expect(')');

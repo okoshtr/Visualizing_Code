@@ -45,14 +45,23 @@ export class PythonGen extends BaseGen {
     );
     const classLines = this.classes.map((c) => this.capture(() => this.emitClass(c)));
     this.place = MAIN;
-    const mainLines = this.capture(() => this.withId(this.program.mainId, () => this.body(this.program.main ?? [])));
+    const [header, rest] = this.splitHeader(this.program.main ?? []);
+    const headerLines = this.capture(() => this.body(header));
+    const restLines = this.capture(() => this.withId(this.program.mainId, () => this.body(rest)));
 
     const out: string[] = [];
     const imports = [...this.imports].sort();
     for (const imp of imports) out.push(`import ${imp}`);
     for (const imp of this.program.meta?.imports ?? []) {
       if (imp.lang !== 'python') continue;
-      out.push(imp.alias === imp.module ? `import ${imp.module}` : `import ${imp.module} as ${imp.alias}`);
+      if (!imp.alias && imp.names) out.push(`from ${imp.module} import ${this.importedNames(imp).join(', ')}`);
+      else out.push(imp.alias === imp.module ? `import ${imp.module}` : `import ${imp.module} as ${imp.alias}`);
+    }
+    // a comment at the start stays above the imports
+    let mainLines = [...headerLines, ...restLines];
+    if (out.length && headerLines.length) {
+      out.unshift(...headerLines);
+      mainLines = restLines;
     }
     if (out.length) out.push('', '');
     for (const c of classLines) out.push(...c, '', '');
@@ -301,7 +310,7 @@ export class PythonGen extends BaseGen {
       case 'call':
         return [`${this.id(e.name)}(${this.args(e.args)})`, ATOM];
       case 'lib':
-        return this.libCode(e.lib, e.fn, e.args);
+        return this.libCode(e.lib, e.fn, e.args, e.get);
       case 'method':
         return [`${this.sub(e.obj, ATOM)}.${e.name}(${this.args(e.args)})`, ATOM];
       case 'member':

@@ -153,6 +153,8 @@ export function tokenizePython(src: string): Token[] {
 class PyParser {
   p = 0;
   imports: ImportInfo[] = [];
+  /** "from math import sqrt": sqrt -> math.sqrt */
+  stdFrom = new Map<string, { module: string; name: string }>();
   globalsDecl = new Map<string, Set<string>>();
   currentFn: string | null = null;
 
@@ -406,9 +408,38 @@ class PyParser {
             const alias = this.eatKw('as') ? this.name() : module;
             if (!['math', 'random', 'time', 'turtle', 'pathlib'].includes(module) || alias !== module) this.imports.push({ lang: 'python', module, alias });
           } while (this.eat(','));
-          return [];
+          return this.currentFn ? [] : [IMPORT_MARK()];
         }
-        case 'from':
+        case 'from': {
+          // from pulp import LpProblem, LpVariable  /  from math import sqrt
+          this.p++;
+          let module = this.name();
+          while (this.eat('.')) module += '.' + this.name();
+          if (!this.eatKw('import')) throw new ParseError('"import" erwartet.', this.tok.s);
+          const paren = this.eat('(');
+          const names: string[] = [];
+          do {
+            if (paren && this.is(')')) break;
+            if (this.eat('*')) {
+              names.push('*');
+              continue;
+            }
+            const n = this.name();
+            names.push(this.eatKw('as') ? `${n} as ${this.name()}` : n);
+          } while (this.eat(','));
+          if (paren) this.expect(')');
+          if (['math', 'random', 'time'].includes(module) && !names.includes('*')) {
+            for (const n of names) {
+              const [orig, local] = n.split(/\s+as\s+/);
+              this.stdFrom.set(local ?? orig, { module, name: orig });
+            }
+          } else {
+            const known = this.imports.find((i) => i.module === module && !i.alias && i.names);
+            if (known) known.names!.push(...names.filter((n) => !known.names!.includes(n)));
+            else this.imports.push({ lang: 'python', module, alias: '', names });
+          }
+          return this.currentFn ? [] : [IMPORT_MARK()];
+        }
         case 'assert':
         case 'yield':
           throw new ParseError(`"${t.v}" hat noch keinen Block.`, t.s);
@@ -1123,6 +1154,9 @@ function usesName(body: Stmt[], name: string): boolean {
   return used;
 }
 
+/** Placeholder returned for import lines at the top level. */
+const IMPORT_MARK = (): Stmt => ({ k: 'raw', code: '', lang: 'python', src: '__import__' });
+
 export function parsePythonExpr(code: string): Expr {
   const p = new PyParser(code, tokenizePython(code));
   const e = p.expr();
@@ -1154,6 +1188,11 @@ export function parsePython(src: string): ParseResult {
   for (const s of stmts) {
     if (s.k === 'comment') {
       pending.push(s.text);
+      continue;
+    }
+    // comments above the imports belong to the file (main program), not to the next function
+    if (s.k === 'raw' && s.src === '__import__') {
+      flush();
       continue;
     }
     if (s.k === 'raw' && s.src === '__drop__') continue;
@@ -1189,7 +1228,13 @@ export function parsePython(src: string): ParseResult {
     functions.splice(functions.indexOf(mainFn), 1);
   }
   meta.imports = parser.imports;
-  const program: Program = { main, functions, meta, ...(classes.length ? { classes } : {}) };
+  let program: Program = { main, functions, meta, ...(classes.length ? { classes } : {}) };
+  if (parser.stdFrom.size) {
+    program = mapTree(program, (e) => {
+      const std = e.k === 'var' ? parser.stdFrom.get(e.name) : undefined;
+      return std ? { k: 'member', obj: { k: 'var', name: std.module }, name: std.name, src: `${std.module}.${std.name}` } : undefined;
+    });
+  }
   return normalize(program, 'python');
 }
 

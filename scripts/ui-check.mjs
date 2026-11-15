@@ -3,6 +3,7 @@
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -43,6 +44,21 @@ try {
   await page.waitForTimeout(500);
   const loops = await page.evaluate(() => window.vcEditor.ws.getAllBlocks(false).filter((b) => b.type === 'controls_for').length);
   assert.equal(loops, 1, 'for loop block created');
+
+  // every sample file goes through the real Blockly editor without losing anything
+  const dir = new URL('../tests/samples/', import.meta.url);
+  for (const file of readdirSync(dir)) {
+    const code = readFileSync(new URL(file, dir), 'utf8');
+    const result = await page.evaluate(([c, f]) => {
+      const lang = window.vcCore.langFromFileName(f);
+      window.vcEditor.loadCode(c, lang, false, false);
+      const expected = window.vcCore.generate(window.vcCore.parse(c, lang).program, lang).code;
+      const disabled = window.vcEditor.ws.getAllBlocks(false).filter((b) => !b.isEnabled()).map((b) => b.type);
+      return { same: window.vcEditor.generatedCode === expected, disabled, actual: window.vcEditor.generatedCode, expected };
+    }, [code, file]);
+    assert.deepEqual(result.disabled, [], `${file}: ausgegraute Blöcke`);
+    assert.ok(result.same, `${file}: Code nach dem Weg über die Blöcke verändert\n--- erwartet\n${result.expected}\n--- bekommen\n${result.actual}`);
+  }
 
   assert.deepEqual(errors, []);
   console.log('UI-Check erfolgreich');

@@ -2,14 +2,14 @@
 
 import * as Blockly from 'blockly/core';
 import { registerContinuousToolbox } from '@blockly/continuous-toolbox';
-import { type Layout, type WorkspaceState, fromBlockly, toBlockly } from '../core/blockly';
+import { type Layout, type WorkspaceState, fromBlockly, importBlocks, toBlockly } from '../core/blockly';
 import { EXAMPLES } from '../core/examples';
 import { generate } from '../core/generators';
 import { LANGS, LANG_INFO, type Lang, type Program, type ProgramMeta, walkAllExprs, walkStmts } from '../core/ir';
 import { type Drawing, RunError, runProgram } from '../core/interpreter';
 import { isExternalLib } from '../core/library';
 import { parse } from '../core/parsers';
-import { TOOLBOX, externalLibs, installAll, makeTheme, registerExternal, registerFunctionCategory } from './blocks';
+import { CONNECTION_CHECKER, TOOLBOX, blockLanguage, externalLibs, installAll, keepImportsEnabled, makeTheme, registerExternal, registerFunctionCategory, setBlockLanguage } from './blocks';
 import { CodeView } from './codeview';
 
 export interface EditorDocument {
@@ -315,13 +315,16 @@ export class BlockEditor {
       zoom: { controls: true, wheel: true, startScale: window.innerWidth < 700 ? 0.5 : 0.72, maxScale: 2, minScale: 0.35, scaleSpeed: 1.15 },
       move: { scrollbars: true, drag: true, wheel: false },
       grid: { spacing: 24, length: 2, colour: 'rgba(120,130,160,0.25)', snap: false },
-      plugins: { flyoutsVerticalToolbox: 'ContinuousFlyout', metricsManager: 'ContinuousMetrics', toolbox: 'ContinuousToolbox' },
+      plugins: { flyoutsVerticalToolbox: 'ContinuousFlyout', metricsManager: 'ContinuousMetrics', toolbox: 'ContinuousToolbox', connectionChecker: CONNECTION_CHECKER },
     });
     registerFunctionCategory(this.ws);
     // Recycled flyout blocks keep stale state for blocks with dropdowns/mutations.
     (this.ws.getFlyout() as any)?.setRecyclingEnabled?.(false);
     this.ws.updateToolbox(TOOLBOX as any);
-    this.ws.addChangeListener(Blockly.Events.disableOrphans);
+    this.ws.addChangeListener((e: Blockly.Events.Abstract) => {
+      Blockly.Events.disableOrphans(e);
+      if (e.type === Blockly.Events.BLOCK_MOVE || e.type === Blockly.Events.BLOCK_CREATE || e.type === Blockly.Events.FINISHED_LOADING) keepImportsEnabled(this.ws);
+    });
     this.ws.addChangeListener((e: Blockly.Events.Abstract) => {
       // (deselecting, e.g. by clicking into the code, keeps the marked lines)
       if (e.type === Blockly.Events.SELECTED && (e as any).newElementId) this.showLinesForSelection(true);
@@ -421,7 +424,8 @@ export class BlockEditor {
   refresh(notify = true) {
     const state = Blockly.serialization.workspaces.save(this.ws) as WorkspaceState;
     const { program } = fromBlockly(state);
-    program.meta = this.meta;
+    // imports come from the "importiere Paket" blocks
+    program.meta = { ...this.meta, imports: program.meta?.imports ?? [] };
     this.lastProgram = program;
     const res = generate(program, this.lang);
     this.lastCode = res.code;
@@ -474,6 +478,15 @@ export class BlockEditor {
     this.withoutEvents(() => {
       this.ws.clear();
       Blockly.serialization.workspaces.load(doc.blocks ?? {}, this.ws);
+      // older documents kept the imports only in meta: show them as blocks
+      const imports = this.meta.imports ?? [];
+      const chain = importBlocks(imports);
+      if (chain && !this.ws.getAllBlocks(false).some((b) => b.type === 'import_module' || b.type === 'import_from')) {
+        const tops = this.ws.getTopBlocks(false);
+        const minY = Math.min(30, ...tops.map((b) => b.getRelativeToSurfaceXY().y));
+        const b = Blockly.serialization.blocks.append(chain as any, this.ws) as Blockly.BlockSvg;
+        b.moveBy(30, minY - 40 - b.getHeightWidth().height);
+      }
     });
     this.codeDirty = false;
     this.dom.pending.hidden = true;
@@ -502,7 +515,7 @@ export class BlockEditor {
   /** Places top blocks without a saved position below the others, using their real size. */
   private arrange(layout: Layout) {
     const tops = this.ws.getTopBlocks(false);
-    const key = (b: Blockly.BlockSvg) => (b.type === 'event_start' ? 'main' : b.type.startsWith('procedures_def') ? `fn:${b.getFieldValue('NAME')}` : b.type === 'class_def' ? `cls:${b.getFieldValue('NAME')}` : '');
+    const key = (b: Blockly.BlockSvg) => (b.type === 'import_module' || b.type === 'import_from' ? 'imports' : b.type === 'event_start' ? 'main' : b.type.startsWith('procedures_def') ? `fn:${b.getFieldValue('NAME')}` : b.type === 'class_def' ? `cls:${b.getFieldValue('NAME')}` : '');
     let bottom = 20;
     for (const b of tops) {
       const k = key(b);
@@ -510,7 +523,8 @@ export class BlockEditor {
     }
     const unplaced = tops.filter((b) => !layout[key(b)]);
     // main program first, then functions in source order
-    unplaced.sort((a, b) => (a.type === 'event_start' ? -1 : b.type === 'event_start' ? 1 : 0));
+    const rank = (b: Blockly.BlockSvg) => (b.type.startsWith('import_') ? 0 : b.type === 'event_start' ? 1 : 2);
+    unplaced.sort((a, b) => rank(a) - rank(b));
     for (const b of unplaced) {
       const pos = b.getRelativeToSurfaceXY();
       b.moveBy(30 - pos.x, bottom + 30 - pos.y);
@@ -520,14 +534,14 @@ export class BlockEditor {
 
   private registerExternals(meta: ProgramMeta, program?: Program) {
     externalLibs.clear();
-    for (const imp of meta.imports ?? []) registerExternal(`ext:${imp.alias}`, '');
+    for (const imp of meta.imports ?? []) registerExternal(`ext:${imp.alias || imp.module}`, '');
     if (program) {
-      const all = [...(program.main ?? []), ...program.functions.flatMap((f) => f.body)];
+      const all = [...(program.main ?? []), ...program.functions.flatMap((f) => f.body), ...(program.classes ?? []).flatMap((c) => [...c.ctor, ...c.methods.flatMap((m) => m.body)])];
       walkStmts(all, (s) => {
         if (s.k === 'libstmt' && isExternalLib(s.lib)) registerExternal(s.lib, s.fn);
       });
       walkAllExprs(all, (e) => {
-        if (e.k === 'lib' && isExternalLib(e.lib)) registerExternal(e.lib, e.fn);
+        if (e.k === 'lib' && isExternalLib(e.lib) && !e.get) registerExternal(e.lib, e.fn);
       });
     }
     for (const set of externalLibs.values()) set.delete('');
@@ -551,7 +565,8 @@ export class BlockEditor {
     this.loadProgram(res.program, keepLayout, notify);
     const problems = res.diagnostics.map((d) => (d.line ? `Zeile ${d.line}: ${d.message}` : d.message));
     let raw = 0;
-    walkStmts([...(res.program.main ?? []), ...res.program.functions.flatMap((f) => f.body)], (s) => {
+    const p = res.program;
+    walkStmts([...(p.main ?? []), ...p.functions.flatMap((f) => f.body), ...(p.classes ?? []).flatMap((c) => [...c.ctor, ...c.methods.flatMap((m) => m.body)])], (s) => {
       if (s.k === 'raw') raw++;
     });
     if (raw) problems.push(`${raw} Stelle(n) haben noch keinen eigenen Block und wurden als Code-Block übernommen.`);
@@ -593,6 +608,11 @@ export class BlockEditor {
     }
     this.dom.codeTitle.textContent = `${LANG_INFO[this.lang].label}-Code`;
     this.code?.setLanguage(this.lang);
+    // new "importiere Paket" blocks start with the current language
+    if (blockLanguage() !== this.lang) {
+      setBlockLanguage(this.lang);
+      if (this.ws) this.ws.refreshToolboxSelection();
+    }
   }
 
   private onCodeEdited() {
