@@ -1,0 +1,488 @@
+// Runs a program directly (the "green flag"). Works the same for all languages.
+
+import { type Analysis, MAIN, analyze, isList } from './analysis';
+import type { Ex, Expr, Lang, Program, Stmt } from './ir';
+import { findLibFn, isExternalLib } from './library';
+
+export interface RunHost {
+  /** Text to show in the console (contains "\n" where a line ends). */
+  write(text: string): void;
+  input(prompt: string): Promise<string>;
+  /** Called before every statement (used for highlighting / slow motion). */
+  step?(blockId: string | undefined): Promise<void> | void;
+  shouldStop(): boolean;
+}
+
+export class RunError extends Error {
+  constructor(
+    message: string,
+    public blockId?: string,
+  ) {
+    super(message);
+  }
+}
+
+class Stop extends Error {}
+class Break {}
+class Continue {}
+class Return {
+  constructor(public value: any) {}
+}
+
+type Frame = { place: string; vars: Map<string, any> };
+
+export function formatValue(v: any, lang: Lang, nested = false): string {
+  if (typeof v === 'boolean') return ['python', 'csharp', 'vba'].includes(lang) ? (v ? 'True' : 'False') : v ? 'true' : 'false';
+  if (typeof v === 'number') {
+    if (Number.isNaN(v)) return 'NaN';
+    if (!Number.isFinite(v)) return v > 0 ? 'Infinity' : '-Infinity';
+    return String(Math.round(v * 1e12) / 1e12 === Math.round(v) ? Math.round(v) : v);
+  }
+  if (Array.isArray(v)) return '[' + v.map((x) => formatValue(x, lang, true)).join(', ') + ']';
+  if (typeof v === 'string' && nested && lang === 'python') return `'${v}'`;
+  if (v === undefined || v === null) return '';
+  return String(v);
+}
+
+export async function runProgram(program: Program, host: RunHost, lang: Lang): Promise<void> {
+  const r = new Runner(program, host, lang);
+  await r.run();
+}
+
+class Runner {
+  a: Analysis;
+  globals = new Map<string, any>();
+  stack: Frame[] = [];
+  steps = 0;
+  current?: string;
+  fns: Map<string, Program['functions'][number]>;
+
+  constructor(
+    public program: Program,
+    public host: RunHost,
+    public lang: Lang,
+  ) {
+    this.a = analyze(program);
+    this.fns = new Map(program.functions.map((f) => [f.name, f]));
+  }
+
+  async run() {
+    if (!this.program.main) throw new RunError('Es gibt keinen Block "Wenn Programm startet".');
+    this.stack.push({ place: MAIN, vars: this.globals });
+    try {
+      await this.block(this.program.main);
+    } catch (e) {
+      if (e instanceof Stop) return;
+      if (e instanceof Return) return;
+      if (e instanceof Break || e instanceof Continue) return;
+      throw e;
+    }
+  }
+
+  get frame(): Frame {
+    return this.stack[this.stack.length - 1];
+  }
+
+  err(msg: string): never {
+    throw new RunError(msg, this.current);
+  }
+
+  defaultFor(name: string, place: string): any {
+    const t = this.a.varType(name, place);
+    if (t === 'string') return '';
+    if (t === 'bool') return false;
+    if (isList(t)) return [];
+    return 0;
+  }
+
+  scopeFor(name: string): Map<string, any> {
+    const f = this.frame;
+    if (f.place !== MAIN) {
+      const p = this.a.place(f.place);
+      if (p.params.includes(name) || p.locals.has(name)) return f.vars;
+    }
+    return this.globals;
+  }
+
+  get(name: string): any {
+    const scope = this.scopeFor(name);
+    if (!scope.has(name)) scope.set(name, this.defaultFor(name, this.frame.place));
+    return scope.get(name);
+  }
+
+  set(name: string, value: any) {
+    this.scopeFor(name).set(name, value);
+  }
+
+  async tick(id?: string) {
+    if (id) this.current = id;
+    if (this.host.shouldStop()) throw new Stop();
+    if (this.host.step) await this.host.step(id);
+    if (++this.steps % 400 === 0) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  async block(stmts: Stmt[]) {
+    for (const s of stmts) await this.stmt(s);
+  }
+
+  async loopBody(body: Stmt[]): Promise<'break' | 'continue' | null> {
+    try {
+      await this.block(body);
+    } catch (e) {
+      if (e instanceof Break) return 'break';
+      if (e instanceof Continue) return 'continue';
+      throw e;
+    }
+    return null;
+  }
+
+  async stmt(s: Stmt): Promise<void> {
+    await this.tick(s.id);
+    switch (s.k) {
+      case 'print': {
+        const v = await this.expr(s.value);
+        this.host.write(formatValue(v, this.lang) + (s.newline ? '\n' : ''));
+        return;
+      }
+      case 'set':
+        this.set(s.name, await this.expr(s.value));
+        return;
+      case 'change': {
+        const old = this.get(s.name);
+        const by = await this.expr(s.by);
+        this.set(s.name, this.num(old, s.name) + this.num(by));
+        return;
+      }
+      case 'if':
+        for (const b of s.branches) {
+          if (this.truthy(await this.expr(b.cond))) {
+            await this.block(b.body);
+            return;
+          }
+        }
+        if (s.else) await this.block(s.else);
+        return;
+      case 'repeat': {
+        const n = this.num(await this.expr(s.times));
+        for (let i = 0; i < n; i++) {
+          const r = await this.loopBody(s.body);
+          if (r === 'break') break;
+          await this.tick();
+        }
+        return;
+      }
+      case 'while':
+        while (true) {
+          const c = this.truthy(await this.expr(s.cond));
+          if (s.until ? c : !c) break;
+          const r = await this.loopBody(s.body);
+          if (r === 'break') break;
+          await this.tick();
+        }
+        return;
+      case 'for': {
+        const from = this.num(await this.expr(s.from));
+        const to = this.num(await this.expr(s.to));
+        const by = s.by ? this.num(await this.expr(s.by)) : 1;
+        if (by === 0) this.err('Die Schrittweite der Zählschleife darf nicht 0 sein.');
+        for (let i = from; by > 0 ? i <= to : i >= to; i += by) {
+          this.set(s.var, i);
+          const r = await this.loopBody(s.body);
+          if (r === 'break') break;
+          i = this.num(this.get(s.var));
+          await this.tick();
+        }
+        return;
+      }
+      case 'foreach': {
+        let list = await this.expr(s.list);
+        if (typeof list === 'string') list = [...list];
+        if (!Array.isArray(list)) this.err('"für jedes Element" braucht eine Liste.');
+        for (let i = 0; i < list.length; i++) {
+          this.set(s.var, list[i]);
+          const r = await this.loopBody(s.body);
+          if (r === 'break') break;
+          await this.tick();
+        }
+        return;
+      }
+      case 'break':
+        throw new Break();
+      case 'continue':
+        throw new Continue();
+      case 'listadd': {
+        const list = this.list(await this.expr(s.list));
+        list.push(await this.expr(s.value));
+        return;
+      }
+      case 'listset': {
+        const list = this.list(await this.expr(s.list));
+        const i = this.index(list, await this.expr(s.index));
+        list[i] = await this.expr(s.value);
+        return;
+      }
+      case 'callstmt':
+        await this.call(s.name, s.args);
+        return;
+      case 'libstmt':
+        await this.lib(s.lib, s.fn, s.args);
+        return;
+      case 'methodstmt':
+        this.err(`Die Methode "${s.name}" kann die eingebaute Ausführung nicht ausführen.`);
+        break;
+      case 'return':
+        throw new Return(s.value ? await this.expr(s.value) : undefined);
+      case 'comment':
+        return;
+      case 'raw':
+        this.err('Ein Code-Block kann in der eingebauten Ausführung nicht laufen.');
+        break;
+      case 'pexpr':
+        await this.expr(s.e);
+        return;
+    }
+  }
+
+  async call(name: string, argExprs: Ex[]): Promise<any> {
+    const f = this.fns.get(name);
+    if (!f) this.err(`Die Funktion "${name}" gibt es nicht.`);
+    if (this.stack.length > 1500) this.err('Zu viele verschachtelte Funktionsaufrufe (endlose Rekursion?).');
+    const args: any[] = [];
+    for (const a of argExprs) args.push(await this.expr(a));
+    const vars = new Map<string, any>();
+    f.params.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, f.name)));
+    this.stack.push({ place: f.name, vars });
+    const saved = this.current;
+    try {
+      await this.block(f.body);
+    } catch (e) {
+      if (e instanceof Return) return e.value;
+      throw e;
+    } finally {
+      this.stack.pop();
+      this.current = saved;
+    }
+    return f.returns ? this.defaultFor('__ret__', f.name) : undefined;
+  }
+
+  async lib(lib: string, fn: string, argExprs: Ex[]): Promise<any> {
+    if (isExternalLib(lib)) {
+      const mod = lib.slice(4);
+      this.err(mod ? `Die Bibliothek "${mod}" kann die eingebaute Ausführung nicht ausführen.` : `Die Funktion "${fn}" kann die eingebaute Ausführung nicht ausführen.`);
+    }
+    const def = findLibFn(lib, fn);
+    if (!def) this.err(`Unbekannte Bibliotheksfunktion ${lib}.${fn}.`);
+    const args: any[] = [];
+    for (const a of argExprs) args.push(await this.expr(a));
+    return await def.run(args, {
+      random: Math.random,
+      sleep: async (sec) => {
+        const end = Date.now() + Math.max(0, sec) * 1000;
+        while (Date.now() < end) {
+          if (this.host.shouldStop()) throw new Stop();
+          await new Promise((r) => setTimeout(r, Math.min(50, end - Date.now())));
+        }
+      },
+      error: (m) => this.err(m),
+    });
+  }
+
+  num(v: any, name?: string): number {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+    this.err(name ? `"${name}" enthält keine Zahl, sondern "${formatValue(v, this.lang)}".` : `Hier wird eine Zahl erwartet, nicht "${formatValue(v, this.lang)}".`);
+  }
+
+  truthy(v: any): boolean {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return v !== '';
+    if (Array.isArray(v)) return v.length > 0;
+    return !!v;
+  }
+
+  list(v: any): any[] {
+    if (!Array.isArray(v)) this.err('Hier wird eine Liste erwartet.');
+    return v;
+  }
+
+  index(list: any[], i: any): number {
+    const n = this.num(i);
+    if (!Number.isInteger(n) || n < 0 || n >= list.length) {
+      this.err(`Position ${formatValue(i, this.lang)} gibt es nicht (die Liste hat ${list.length} Elemente, gezählt ab 0).`);
+    }
+    return n;
+  }
+
+  async expr(e: Ex): Promise<any> {
+    if (!e) return 0;
+    if (e.id) this.current = e.id;
+    switch (e.k) {
+      case 'num':
+      case 'str':
+      case 'bool':
+        return e.v;
+      case 'var':
+        return this.get(e.name);
+      case 'bin':
+        return this.bin(e);
+      case 'not':
+        return !this.truthy(await this.expr(e.a));
+      case 'math': {
+        const x = this.num(await this.expr(e.a));
+        switch (e.fn) {
+          case 'sqrt':
+            if (x < 0) this.err('Die Wurzel aus einer negativen Zahl gibt es nicht.');
+            return Math.sqrt(x);
+          case 'abs':
+            return Math.abs(x);
+          case 'neg':
+            return -x;
+          case 'ln':
+            return Math.log(x);
+          case 'log10':
+            return Math.log10(x);
+          case 'exp':
+            return Math.exp(x);
+          case 'pow10':
+            return 10 ** x;
+          case 'round':
+            return Math.round(x);
+          case 'ceil':
+            return Math.ceil(x);
+          case 'floor':
+            return Math.floor(x);
+        }
+        break;
+      }
+      case 'random': {
+        const a = Math.ceil(this.num(await this.expr(e.from)));
+        const b = Math.floor(this.num(await this.expr(e.to)));
+        return a + Math.floor(Math.random() * (b - a + 1));
+      }
+      case 'join': {
+        let out = '';
+        for (const p of e.parts) out += formatValue(await this.expr(p), this.lang);
+        return out;
+      }
+      case 'len': {
+        const v = await this.expr(e.a);
+        if (typeof v === 'string' || Array.isArray(v)) return v.length;
+        return formatValue(v, this.lang).length;
+      }
+      case 'ask': {
+        const prompt = formatValue(await this.expr(e.prompt), this.lang);
+        const answer = await this.host.input(prompt);
+        if (this.host.shouldStop()) throw new Stop();
+        if (e.as === 'text') return answer;
+        return this.toNumber(answer, e.as === 'int');
+      }
+      case 'convert': {
+        const v = await this.expr(e.a);
+        if (e.to === 'text') return formatValue(v, this.lang);
+        if (typeof v === 'number') return e.to === 'int' ? Math.trunc(v) : v;
+        return this.toNumber(formatValue(v, this.lang), e.to === 'int');
+      }
+      case 'list': {
+        const out: any[] = [];
+        for (const it of e.items) out.push(await this.expr(it));
+        return out;
+      }
+      case 'index': {
+        const l = await this.expr(e.list);
+        if (typeof l === 'string') return l[this.index([...l], await this.expr(e.index))];
+        const list = this.list(l);
+        return list[this.index(list, await this.expr(e.index))];
+      }
+      case 'call': {
+        const id = e.id;
+        const r = await this.call(e.name, e.args);
+        this.current = id;
+        return r;
+      }
+      case 'lib':
+        return this.lib(e.lib, e.fn, e.args);
+      case 'cond':
+        return this.truthy(await this.expr(e.cond)) ? this.expr(e.a) : this.expr(e.b);
+      case 'method':
+        this.err(`Die Methode "${e.name}" kann die eingebaute Ausführung nicht ausführen.`);
+        break;
+      case 'member':
+        this.err(`"${e.name}" kann die eingebaute Ausführung nicht auswerten.`);
+        break;
+      case 'raw':
+        this.err('Ein Code-Block kann in der eingebauten Ausführung nicht laufen.');
+        break;
+      default:
+        this.err(`Dieser Ausdruck kann nicht ausgeführt werden (${e.k}).`);
+    }
+  }
+
+  toNumber(text: string, int: boolean): number {
+    const t = text.trim().replace(',', '.');
+    const v = Number(t);
+    if (t === '' || Number.isNaN(v)) this.err(`"${text}" ist keine ${int ? 'ganze Zahl' : 'Zahl'}.`);
+    if (int && !Number.isInteger(v)) this.err(`"${text}" ist keine ganze Zahl.`);
+    return v;
+  }
+
+  async bin(e: Expr & { k: 'bin' }): Promise<any> {
+    if (e.op === 'AND') return this.truthy(await this.expr(e.a)) && this.truthy(await this.expr(e.b));
+    if (e.op === 'OR') return this.truthy(await this.expr(e.a)) || this.truthy(await this.expr(e.b));
+    const a = await this.expr(e.a);
+    const b = await this.expr(e.b);
+    this.current = e.id ?? this.current;
+    switch (e.op) {
+      case 'ADD':
+        if (typeof a === 'string' || typeof b === 'string') return formatValue(a, this.lang) + formatValue(b, this.lang);
+        if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
+        return this.num(a) + this.num(b);
+      case 'SUB':
+        return this.num(a) - this.num(b);
+      case 'MUL':
+        if (typeof a === 'string' && typeof b === 'number') return a.repeat(Math.max(0, b));
+        return this.num(a) * this.num(b);
+      case 'DIV':
+        if (this.num(b) === 0) this.err('Durch 0 kann man nicht teilen.');
+        return this.num(a) / this.num(b);
+      case 'IDIV': {
+        if (this.num(b) === 0) this.err('Durch 0 kann man nicht teilen.');
+        const q = this.num(a) / this.num(b);
+        return this.lang === 'python' ? Math.floor(q) : Math.trunc(q);
+      }
+      case 'MOD': {
+        if (this.num(b) === 0) this.err('Durch 0 kann man nicht teilen.');
+        const x = this.num(a);
+        const y = this.num(b);
+        return this.lang === 'python' ? ((x % y) + y) % y : x % y;
+      }
+      case 'POW':
+        return this.num(a) ** this.num(b);
+      case 'EQ':
+        return equals(a, b);
+      case 'NEQ':
+        return !equals(a, b);
+      case 'LT':
+        return compare(a, b) < 0;
+      case 'LTE':
+        return compare(a, b) <= 0;
+      case 'GT':
+        return compare(a, b) > 0;
+      case 'GTE':
+        return compare(a, b) >= 0;
+    }
+  }
+}
+
+function equals(a: any, b: any): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
+  return a === b;
+}
+
+function compare(a: any, b: any): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  const x = String(a);
+  const y = String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}

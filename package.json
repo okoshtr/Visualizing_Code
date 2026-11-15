@@ -1,0 +1,34 @@
+{
+  "name": "visualizing-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scratch-ähnlicher Block-Editor für Python, Java, JavaScript, C#, C++ und VBA",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "serve": "node scripts/serve.mjs"
+  },
+  "devDependencies": {
+    "@blockly/continuous-toolbox": "^13.4.0",
+    "@blockly/field-multilineinput": "^13.4.0",
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/legacy-modes": "^6.5.5",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@codemirror/view": "^6.43.15",
+    "@types/node": "^22.20.5",
+    "@types/vscode": "^1.85.0",
+    "blockly": "^13.4.0",
+    "codemirror": "^6.0.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
