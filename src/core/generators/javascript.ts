@@ -32,7 +32,10 @@ export class JavaScriptGen extends CLikeGen {
 
   private mentionsInMain = new Set<string>();
 
-  protected printCode(value: Ex, newline: boolean): string {
+  protected printCode(value: Ex, newline: boolean, spaced?: Ex[] | null): string {
+    // console.log(a, b) prints numbers, texts and truth values like String(a) + " " + String(b)
+    const simple = (e: Ex) => ['string', 'int', 'double', 'bool'].includes(this.typeOf(e));
+    if (newline && spaced?.every(simple)) return `console.log(${spaced.map((v) => this.sub(v, 0)).join(', ')})`;
     if (newline) return `console.log(${this.sub(value, 0, { k: 'str', v: '' })})`;
     const v = this.isStringy(value) ? this.sub(value, 0) : `String(${this.sub(value)})`;
     return `process.stdout.write(${v})`;

@@ -115,13 +115,20 @@ export class PythonGen extends BaseGen {
 
   protected stmt(s: Stmt): void {
     switch (s.k) {
-      case 'print':
+      case 'print': {
         if (s.newline && s.value?.k === 'str' && s.value.v === '') {
           this.emit('print()');
           break;
         }
-        this.emit(s.newline ? `print(${this.sub(s.value, 0, { k: 'str', v: '' })})` : `print(${this.sub(s.value, 0, { k: 'str', v: '' })}, end="")`);
+        const values = this.spacedValues(s);
+        if (values) {
+          this.emit(`print(${values.map((v) => this.sub(v, 0, { k: 'str', v: '' })).join(', ')}${s.newline ? '' : ', end=""'})`);
+          break;
+        }
+        const value = this.printValue(s);
+        this.emit(s.newline ? `print(${this.sub(value, 0, { k: 'str', v: '' })})` : `print(${this.sub(value, 0, { k: 'str', v: '' })}, end="")`);
         break;
+      }
       case 'set':
         this.emit(`${this.id(s.name)} = ${this.sub(s.value)}`);
         break;

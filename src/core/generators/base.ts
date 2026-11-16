@@ -406,6 +406,30 @@ export abstract class BaseGen {
     return [get ? name : `${name}(${this.args(args)})`, ATOM];
   }
 
+  /** print(a, b): the single values if the output is "a b" written as several values. */
+  protected spacedValues(s: Stmt): Ex[] | null {
+    if (s.k !== 'print' || !s.spaced || s.value?.k !== 'join') return null;
+    const parts = s.value.parts;
+    if (parts.length < 3 || parts.length % 2 === 0) return null;
+    for (let i = 1; i < parts.length; i += 2) {
+      const sep = parts[i];
+      if (sep?.k !== 'str' || sep.v !== ' ') return null;
+    }
+    return parts.filter((_, i) => i % 2 === 0);
+  }
+
+  /** Value of a print(a, b) that is written as one text: "Liste" + " " + xs becomes "Liste " + xs. */
+  protected printValue(s: Stmt & { k: 'print' }): Ex {
+    if (!s.spaced || s.value?.k !== 'join') return s.value;
+    const parts: Ex[] = [];
+    for (const x of s.value.parts) {
+      const last = parts[parts.length - 1];
+      if (x?.k === 'str' && last?.k === 'str') parts[parts.length - 1] = { k: 'str', v: last.v + x.v };
+      else parts.push(x);
+    }
+    return parts.length === 1 ? parts[0] : { ...s.value, parts };
+  }
+
   /** Comments at the start of the main program (a file header): [header, rest]. */
   protected splitHeader(main: Stmt[]): [Stmt[], Stmt[]] {
     let i = 0;

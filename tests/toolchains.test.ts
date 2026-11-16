@@ -179,3 +179,13 @@ describe('exercise solutions run with the real toolchains', () => {
     }
   }
 });
+
+describe('print with several values prints the same everywhere', () => {
+  const program = parse('a = 3\nb = 2.5\nname = "Ada"\nprint(a, b, name)\nprint("Summe:", a + b, end="")\nprint()\nprint(7 // 2, a > 1)\n', 'python').program;
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(lang, async () => {
+      const expected = await runToText(program, lang);
+      expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(normalize(expected));
+    });
+  }
+});

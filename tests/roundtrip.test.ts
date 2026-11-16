@@ -170,3 +170,22 @@ describe('variables view (snapshot of the built-in runner)', () => {
     expect(main.find((v: any) => v.name === 'k').value).toBe("Konto(inhaber='Ada', stand=5)");
   });
 });
+
+describe('print with several values', () => {
+  it('Python print(a, b) stays as it is, also through the blocks', () => {
+    const code = 'a = 3\nb = 2.5\nname = "Ada"\nprint(a, b, name)\nprint("Summe:", a + b, end="")\nprint()\nprint(name + " " + name)\n';
+    const program = parse(code, 'python').program;
+    expect(generate(program, 'python').code).toBe(code);
+    const back = fromBlockly(JSON.parse(JSON.stringify(toBlockly(program)))).program;
+    back.meta = program.meta;
+    expect(generate(back, 'python').code).toBe(code);
+    expect(generate(program, 'javascript').code).toContain('console.log(a, b, name);');
+    expect(generate(program, 'javascript').code).toContain('process.stdout.write("Summe: " + (a + b));');
+  });
+
+  it('JavaScript console.log(a, b) stays, lists are written as text', () => {
+    const code = 'let a = 3;\nlet xs = [1, 2];\nconsole.log("a ist", a);\nconsole.log("Liste " + xs);\n';
+    const program = parse('let a = 3;\nlet xs = [1, 2];\nconsole.log("a ist", a);\nconsole.log("Liste", xs);\n', 'javascript').program;
+    expect(generate(program, 'javascript').code).toBe(code);
+  });
+});

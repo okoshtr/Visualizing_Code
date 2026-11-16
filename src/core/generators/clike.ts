@@ -42,7 +42,8 @@ export abstract class CLikeGen extends BaseGen {
   // ---- language hooks -------------------------------------------------------------
   /** Type name for declarations; ctx 'param' is used for function parameters. */
   protected abstract typeName(t: Ty, ctx?: 'decl' | 'param' | 'ret'): string;
-  protected abstract printCode(value: Ex, newline: boolean): string;
+  /** spaced: the single values of print(a, b) (only JavaScript can print them like that). */
+  protected abstract printCode(value: Ex, newline: boolean, spaced?: Ex[] | null): string;
   protected abstract listLiteral(e: Expr & { k: 'list' }, elem: Ty, inDecl: boolean): Code;
   protected abstract lenCode(e: Expr & { k: 'len' }, ofList: boolean): Code;
   protected abstract indexCode(list: Ex, index: Ex): Code;
@@ -152,7 +153,7 @@ export abstract class CLikeGen extends BaseGen {
     switch (s.k) {
       case 'print':
         if (s.newline && s.value?.k === 'str' && s.value.v === '') this.emit(this.emptyLine() + ';');
-        else this.emit(this.printCode(s.value, s.newline) + ';');
+        else this.emit(this.printCode(this.printValue(s), s.newline, this.spacedValues(s)) + ';');
         break;
       case 'set': {
         const name = this.id(s.name);

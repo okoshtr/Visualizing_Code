@@ -45,7 +45,7 @@ interface Node {
 export type Expr = Node &
   (
     | { k: 'num'; v: number; float?: boolean }
-    | { k: 'str'; v: string }
+    | { k: 'str'; v: string; /** separator between the values of print(a, b) */ sep?: boolean }
     | { k: 'bool'; v: boolean }
     | { k: 'var'; name: string }
     /** For IDIV/MOD: trunc = round toward zero (Java, C#, C++, JS, VBA); default = round down (Python). */
@@ -98,7 +98,8 @@ export type Ex = Expr | null;
 
 export type Stmt = Node &
   (
-    | { k: 'print'; value: Ex; newline: boolean }
+    /** spaced: written as several values, print(a, b) / console.log(a, b) */
+    | { k: 'print'; value: Ex; newline: boolean; spaced?: boolean }
     | { k: 'set'; name: string; value: Ex }
     | { k: 'change'; name: string; by: Ex }
     | { k: 'if'; branches: { cond: Ex; body: Stmt[] }[]; else: Stmt[] | null }

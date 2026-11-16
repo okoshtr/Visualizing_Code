@@ -562,10 +562,10 @@ class Normalizer {
     if (this.lang === 'javascript' && e.k === 'pcall' && e.callee.k === 'member' && e.callee.name === 'log' && e.callee.obj?.k === 'var' && e.callee.obj.name === 'console') {
       const parts: Ex[] = [];
       e.args.forEach((a, i) => {
-        if (i > 0) parts.push({ k: 'str', v: ' ' });
+        if (i > 0) parts.push({ k: 'str', v: ' ', sep: true });
         parts.push(a);
       });
-      return this.stmt({ k: 'print', value: parts.length === 1 ? parts[0] : { k: 'join', parts }, newline: true });
+      return this.stmt({ k: 'print', value: parts.length === 1 ? parts[0] : { k: 'join', parts }, newline: true, ...(e.args.length > 1 ? { spaced: true } : {}) });
     }
     if (e.k === 'pcall') {
       const c = e.callee;
@@ -907,7 +907,7 @@ function mergeStr(parts: Ex[]): Ex[] {
   const out: Ex[] = [];
   for (const x of parts) {
     const last = out[out.length - 1];
-    if (x?.k === 'str' && last?.k === 'str') out[out.length - 1] = { k: 'str', v: last.v + x.v };
+    if (x?.k === 'str' && last?.k === 'str' && !x.sep && !last.sep) out[out.length - 1] = { k: 'str', v: last.v + x.v };
     else if (!(x?.k === 'str' && x.v === '' && parts.length > 1)) out.push(x);
   }
   return out.length ? out : [{ k: 'str', v: '' }];

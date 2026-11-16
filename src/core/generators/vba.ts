@@ -156,7 +156,7 @@ export class VbaGen extends BaseGen {
           this.emit('Debug.Print');
           break;
         }
-        this.emit(`Debug.Print ${this.sub(this.listsAsText(s.value), 0, { k: 'str', v: '' })}${s.newline ? '' : ';'}`);
+        this.emit(`Debug.Print ${this.sub(this.listsAsText(this.printValue(s)), 0, { k: 'str', v: '' })}${s.newline ? '' : ';'}`);
         break;
       case 'set':
         // objects (dictionaries) are assigned with "Set"

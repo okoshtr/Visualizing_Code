@@ -580,7 +580,7 @@ class PyParser {
     if (e.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'print') {
       const kw = e.kwargs ?? {};
       for (const k of Object.keys(kw)) if (k !== 'end' && k !== 'sep') throw new ParseError(`print(${k}=...) hat noch keinen Block.`, this.tok.s);
-      const sep = kw.sep ?? { k: 'str', v: ' ' };
+      const sep: Ex = kw.sep ?? { k: 'str', v: ' ', sep: true };
       let parts: Ex[] = [];
       e.args.forEach((a, i) => {
         if (i > 0) parts.push(sep);
@@ -597,7 +597,7 @@ class PyParser {
       }
       parts = parts.filter((p) => !(p?.k === 'str' && p.v === '' && parts.length > 1));
       const value: Ex = parts.length === 0 ? { k: 'str', v: '' } : parts.length === 1 ? parts[0] : { k: 'join', parts };
-      return { k: 'print', value, newline };
+      return { k: 'print', value, newline, ...(e.args.length > 1 && !kw.sep ? { spaced: true } : {}) };
     }
     return { k: 'pexpr', e };
   }
