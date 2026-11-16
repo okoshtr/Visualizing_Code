@@ -202,7 +202,8 @@ export class VbaGen extends BaseGen {
           if (cls!.baseInit) this.emit(cls!.baseInit);
           for (const fld of c.fields) this.emit(`self.${fld.name} = ${this.sub(fld.value, 0, { k: 'num', v: 0 })}`);
         }
-        this.body(place.body);
+        if (f?.abstract) this.emit(`Err.Raise vbObjectError + 1, , ${this.stringLiteral(`Die Methode ${f.name} muss eine Unterklasse festlegen.`)}`);
+        else this.body(place.body);
         if (c && cls!.ctor && !init) this.emit(`${this.fnVba} = self`);
       }),
     );
@@ -216,7 +217,9 @@ export class VbaGen extends BaseGen {
       if (c && (!cls!.ctor || init)) list.unshift(`self As ${selfType}`);
       const params = list.join(', ');
       const ret = c && cls!.ctor ? selfType : this.typeName(this.a.returnType(this.place));
-      if (f.returns && !init) this.emit(`Function ${this.fnVba}(${params}) As ${ret}`);
+      // an abstract method gives back a value if its versions in the subclasses do
+      const returns = c && !cls!.ctor ? this.h.methodReturns(c.name, f.name) : f.returns;
+      if (returns && !init) this.emit(`Function ${this.fnVba}(${params}) As ${ret}`);
       else this.emit(`Sub ${this.fnVba}(${params})`);
     } else this.emit(`Sub ${(this.program.meta?.sourceLang === 'vba' && this.program.meta.mainName) || 'Main'}()`);
     this.indented(() => {
@@ -225,7 +228,8 @@ export class VbaGen extends BaseGen {
       if (!f && this.usesRandom) this.emit('Randomize');
     });
     this.lines.push(...bodyLines);
-    this.emit(f ? (f.returns && !init ? 'End Function' : 'End Sub') : 'End Sub');
+    const isFunction = f && (c && !cls!.ctor ? this.h.methodReturns(c.name, f.name) : f.returns) && !init;
+    this.emit(f ? (isFunction ? 'End Function' : 'End Sub') : 'End Sub');
     this.fn = null;
   }
 

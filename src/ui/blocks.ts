@@ -625,7 +625,7 @@ function installDictCreate() {
 
 // --- classes ------------------------------------------------------------------------
 
-const CLASS_MEMBERS = new Set(['class_field', 'class_ctor', 'class_method']);
+const CLASS_MEMBERS = new Set(['class_field', 'class_ctor', 'class_method', 'class_abstract']);
 
 /** Creates workspace variables for the parameter names typed into a text field. */
 function ensureParamVariables(block: Blockly.Block, text: string) {
@@ -690,6 +690,18 @@ function installClassBlocks() {
       tooltip: 'Etwas, das jedes Objekt der Klasse kann. Mit "gib zurück" liefert die Methode einen Wert.',
     },
     {
+      type: 'class_abstract',
+      message0: 'Methode %1 mit Werten %2 – legt jede Unterklasse selbst fest',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'laut' },
+        { type: 'field_input', name: 'PARAMS', text: '' },
+      ],
+      previousStatement: 'ClassMember',
+      nextStatement: 'ClassMember',
+      style: 'class_blocks',
+      tooltip: 'Eine Methode ohne Inhalt („abstrakt“): Die Klasse sagt nur, dass es sie gibt; jede Unterklasse legt mit einer eigenen „Methode“ fest, was sie tut. Von so einer Klasse kann man selbst kein Objekt erzeugen.',
+    },
+    {
       type: 'super_obj',
       message0: 'Basisklasse',
       output: null,
@@ -718,7 +730,7 @@ function installClassBlocks() {
       tooltip: 'Ändert eine Eigenschaft eines Objekts.',
     },
   ]);
-  for (const type of ['class_ctor', 'class_method']) {
+  for (const type of ['class_ctor', 'class_method', 'class_abstract']) {
     const init = Blockly.Blocks[type].init;
     Blockly.Blocks[type].init = function (this: Blockly.Block) {
       init.call(this);
@@ -1409,6 +1421,7 @@ export const TOOLBOX = {
         { kind: 'block', type: 'member_get', fields: { NAME: 'name' }, inputs: { OBJ: { block: { type: 'self_obj' } } } },
         { kind: 'label', text: 'Vererbung: trage bei „erbt von“ die Basisklasse ein' },
         { kind: 'block', type: 'class_def', fields: { NAME: 'Dackel', BASE: 'Hund' } },
+        { kind: 'block', type: 'class_abstract', fields: { NAME: 'laut', PARAMS: '' } },
         { kind: 'block', type: 'super_init', extraState: { args: 1 } },
         { kind: 'block', type: 'method_stmt', fields: { NAME: 'bellen' }, inputs: { OBJ: { block: { type: 'super_obj' } } } },
         { kind: 'block', type: 'field_set', fields: { NAME: 'alter' }, inputs: { OBJ: { block: { type: 'self_obj' } }, VALUE: num(1) } },

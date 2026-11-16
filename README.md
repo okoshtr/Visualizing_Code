@@ -27,8 +27,8 @@ Beide nutzen denselben sprachneutralen Kern.
 | **Pakete importieren** | „importiere Paket `pulp` als `pulp`“ bzw. „aus Paket `pulp` importiere `LpProblem, lpSum`“. Das Paket erscheint danach im ersten Dropdown der Bibliotheks-Blöcke; für bekannte Pakete (pulp, numpy, pandas, matplotlib, requests, statistics, json, os, lodash, fs, path) stehen die Funktionen schon im zweiten Dropdown, jede andere lässt sich eintippen. |
 | **Benannte Werte** | „benannt `lowBound` = 0“ für Aufrufe wie `LpVariable("x", lowBound=0)`. Python schreibt `name=wert`, C# `name: wert`, VBA `name:=wert`; die anderen Sprachen übergeben den Wert an seiner Stelle (mit Hinweis). Werte aus Paketen wie `pulp.LpMaximize` haben den Block „Wert … aus …“. |
 | **Klassen** | Klasse mit Eigenschaften, „beim Erzeugen“ (Konstruktor) und Methoden; „dieses Objekt“, „neues Objekt“, „setze Eigenschaft“. In VBA wird daraus ein `Type` mit `NeuKlasse` und `Klasse_methode`. |
-| **Vererbung** | „Klasse Hund erbt von Tier“: Die Unterklasse übernimmt Eigenschaften und Methoden und kann einzelne neu festlegen. „Basisklasse erzeugen mit …“ ruft den Konstruktor der Basisklasse auf (`super(...)` / `base(...)`), „Basisklasse“ als Objekt eines Methodenaufrufs ruft deren Version einer Methode auf. C# bekommt `virtual`/`override`, C++ `virtual`; in VBA, das keine Vererbung kennt, werden die geerbten Teile in jede Unterklasse kopiert (und beim Einlesen wiedererkannt). |
-| **Aufgaben** | 10 geführte Aufgaben in drei Stufen mit Tipp und automatischer Prüfung (Ausgabe, verlangte Bausteine wie Schleife oder Funktion, Schutz vor Endlosschleifen). Gelöste Aufgaben bekommen ein ✓. |
+| **Vererbung** | „Klasse Hund erbt von Tier“: Die Unterklasse übernimmt Eigenschaften und Methoden und kann einzelne neu festlegen. „Basisklasse erzeugen mit …“ ruft den Konstruktor der Basisklasse auf (`super(...)` / `base(...)`), „Basisklasse“ als Objekt eines Methodenaufrufs ruft deren Version einer Methode auf. C# bekommt `virtual`/`override`, C++ `virtual`; in VBA, das keine Vererbung kennt, werden die geerbten Teile in jede Unterklasse kopiert (und beim Einlesen wiedererkannt). Eine Methode „legt jede Unterklasse selbst fest“ ist abstrakt (`@abstractmethod`, `abstract`, `= 0`); Schnittstellen (`interface`) aus Java und C# werden zu solchen Basisklassen. |
+| **Aufgaben** | 16 geführte Aufgaben in drei Stufen mit Tipp und automatischer Prüfung (Ausgabe, verlangte Bausteine wie Schleife oder Funktion, Schutz vor Endlosschleifen). Gelöste Aufgaben bekommen ein ✓. |
 | **Typen** | Für Java, C# und C++ werden Typen (`int`, `double`, `String`, `ArrayList<Integer>`, `Map<String, Integer>`, eigene Klassen …) automatisch abgeleitet. |
 | **Teilen** | In der Web-App kopiert „Teilen“ einen Link, in dem das ganze Programm (komprimiert) steckt. Wer ihn öffnet, sieht genau diese Blöcke. |
 | **Zahlen wie in der Sprache** | Ausgabe, Division (`/`, `//`, `%`), Runden und die Reihenfolge von Wörterbüchern verhalten sich in der eingebauten Konsole wie in der gewählten Sprache. |
@@ -39,24 +39,30 @@ Beide nutzen denselben sprachneutralen Kern.
 - **Ausgabe**: schreibe (mit/ohne neue Zeile), frage … und lies (Text, ganze Zahl, Kommazahl)
 - **Steuerung**: wiederhole n mal, wiederhole bis/solange, wiederhole … bis/solange (Prüfung am Ende), zähle von … bis, für jedes Element, falls/sonst falls/sonst, abbrechen, weiter, versuche … falls Fehler, löse Fehler aus, Fehlermeldung
 - **Operatoren**: + − × ÷, ganzzahlig ÷, Rest, hoch, Vergleiche, und/oder/nicht, Zufallszahl, Wurzel/Betrag/Runden …, Umwandeln (als Zahl/Text), falls-dann-sonst
-- **Text**: Text, verbinde, Länge, Text-Bibliothek
+- **Text**: Text, verbinde, Länge, Text-Bibliothek (u. a. Zahl mit Nachkommastellen, Anzahl von, besteht nur aus Ziffern, Zeichencode)
 - **Variablen**: setze, ändere um, Variable
-- **Listen**: Liste aus …, leere Liste, füge hinzu, Element an Position (ab 0), setze Element, Länge, Summe/Minimum/Maximum, sortieren …
+- **Listen**: Liste aus …, leere Liste, füge hinzu, Element an Position (ab 0), setze Element, Länge, Summe/Minimum/Maximum, sortieren, sortierte Kopie, Liste mit gleichen Werten (Arrays), letztes Element herausnehmen, entferne den Wert, Anzahl von …
 - **Bibliotheken**: Mathe, Text, Liste, Wörterbuch, Datei, Zufall, Zeit, Zeichnen und importierte Pakete
-- **Wörterbücher**: Wörterbuch aus Paaren, Wert zu Schlüssel, setze Schlüssel, enthält/Schlüssel/Werte/Anzahl/entferne
+- **Wörterbücher**: Wörterbuch aus Paaren, Wert zu Schlüssel, Wert zu Schlüssel oder sonst, setze Schlüssel, enthält/Schlüssel/Werte/Anzahl/entferne
 - **Funktionen**: definiere, definiere mit Rückgabe, gib zurück, Aufrufe (Standardwerte und benannte Argumente aus dem Code werden beim Einlesen aufgelöst)
 - **Klassen**: Klasse (mit „erbt von“), Eigenschaft, beim Erzeugen, Methode, dieses Objekt, neues Objekt, Eigenschaft lesen/setzen, Methode aufrufen, Basisklasse erzeugen, Basisklasse
 - **Mehr**: Notiz (Kommentar), Methodenaufruf
 
-`switch`/`Select Case` wird beim Einlesen zu „falls / sonst falls“, Tupel-Zuweisungen
+Beim Einlesen werden auch typische Schreibweisen erkannt, z. B. `f"{x:.2f}"`, `"%d" % n`,
+`String.format`/`printf`, `$"{x:F2}"`, `cout << fixed << setprecision(2)`, `toFixed`,
+`Format(x, "0.00")`, Arrays (`new int[5]`, `int a[3] = {…}`), `StringBuilder`,
+`Substring(von, Länge)`/`substr`/`Mid`, `for (auto& [k, v] : m)` und
+`const f = (x) => …`. `switch`/`Select Case` wird beim Einlesen zu „falls / sonst falls“, Tupel-Zuweisungen
 (`a, b = b, a`) und List Comprehensions werden in einzelne Schritte bzw. Schleifen umgewandelt.
 
 ### Was noch keinen eigenen Block hat
 
 Konstrukte ohne eigenen Block werden beim Einlesen als **Code-Block** übernommen. Er
 enthält den Originaltext, damit nichts verloren geht. Das betrifft derzeit vor allem
-Schnittstellen und Mehrfachvererbung, Lambdas, Generatoren, rohe Zeiger in C++ und
-Objekt-Literale in JavaScript.
+Lambdas (z. B. `map`/`filter`, Sortierschlüssel), Mengen (`set`), `zip`, mehrere
+Schnittstellen, Generatoren, rohe Zeiger in C++, Objekt-Literale in JavaScript und
+VBA-Arrays mit `1 To n`. `tests/idioms.test.ts` führt die typischen Anfänger-Schnipsel
+auf, die schon Blöcke werden, und die noch offenen.
 
 Objekte eigener Klassen verhalten sich in allen Sprachen gleich: Zwei Variablen können
 dasselbe Objekt meinen. In C++ werden sie deshalb als `shared_ptr` (mit `make_shared`)

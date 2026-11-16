@@ -378,6 +378,11 @@ export abstract class CLikeGen extends BaseGen {
   protected classHead(c: ClassDef): string {
     return c.base ? `class ${c.name} extends ${c.base}` : `class ${c.name}`;
   }
+  /** A method without content: "abstract String laut();" (null: JavaScript has none). */
+  protected abstractMethod(_c: ClassDef, m: FunctionDef, ret: string, params: string): string | null {
+    return `abstract ${ret} ${m.name}(${params});`;
+  }
+
   /** The base class as object of a method call ("super." / "base." / "Tier::"). */
   protected superPrefix(): string {
     return 'super.';
@@ -451,8 +456,12 @@ export abstract class CLikeGen extends BaseGen {
           gap();
           this.withId(m.id, () => {
             if (m.comment) this.comment(m.comment);
-            const ret = m.returns ? this.typeName(this.a.returnType(place), 'ret') : 'void';
-            this.open(this.methodHead(c, m, ret, this.paramList(place, m.params)), () => this.functionBody(this.a.place(place)));
+            const ret = this.h.methodReturns(c.name, m.name) ? this.typeName(this.a.returnType(place), 'ret') : 'void';
+            const params = this.paramList(place, m.params);
+            const decl = m.abstract ? this.abstractMethod(c, m, ret, params) : null;
+            if (decl) this.emit(decl);
+            else if (m.abstract) this.open(this.methodHead(c, m, ret, params), () => this.emit(`throw new Error(${this.stringLiteral(`Die Methode ${m.name} muss eine Unterklasse festlegen.`)});`));
+            else this.open(this.methodHead(c, m, ret, params), () => this.functionBody(this.a.place(place)));
           });
         }
       }, false);

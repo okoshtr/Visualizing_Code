@@ -73,7 +73,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
   const fnParams = new Map(program.functions.map((f) => [f.name, f.params]));
 
   const literalShadow = (e: Ex): BlockState | null => {
-    if (e?.k === 'num') return { type: 'math_number', id: uid(), fields: { NUM: e.v } };
+    // 1.0 stays a decimal number (Python prints 1.0, not 1)
+    if (e?.k === 'num') return { type: 'math_number', id: uid(), fields: { NUM: e.v }, ...(e.float && Number.isInteger(e.v) ? { data: JSON.stringify({ float: true }) } : {}) };
     if (e?.k === 'str') return { type: 'text', id: uid(), fields: { TEXT: e.v } };
     return null;
   };
@@ -113,7 +114,7 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
     const id = uid();
     switch (e.k) {
       case 'num':
-        return { type: 'math_number', id, fields: { NUM: e.v } };
+        return { type: 'math_number', id, fields: { NUM: e.v }, ...(e.float && Number.isInteger(e.v) ? { data: JSON.stringify({ float: true }) } : {}) };
       case 'str':
         return { type: 'text', id, fields: { TEXT: e.v } };
       case 'bool':
@@ -329,7 +330,9 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
     }
     for (const m of c.methods) {
       m.params.forEach(varId);
-      const mb: BlockState = { type: 'class_method', id: m.id ?? uid(), fields: { NAME: m.name, PARAMS: m.params.join(', ') }, inputs: body('DO', m.body) };
+      const mb: BlockState = m.abstract
+        ? { type: 'class_abstract', id: m.id ?? uid(), fields: { NAME: m.name, PARAMS: m.params.join(', ') } }
+        : { type: 'class_method', id: m.id ?? uid(), fields: { NAME: m.name, PARAMS: m.params.join(', ') }, inputs: body('DO', m.body) };
       if (m.comment) mb.icons = { comment: { text: m.comment, pinned: false, height: 80, width: 220 } };
       members.push(mb);
     }
@@ -426,7 +429,8 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
     switch (b.type) {
       case 'math_number': {
         const v = Number(field(b, 'NUM') ?? 0);
-        return withId({ k: 'num', v: Number.isFinite(v) ? v : 0 });
+        const float = readData(b).float === true || !Number.isInteger(v);
+        return withId({ k: 'num', v: Number.isFinite(v) ? v : 0, ...(float ? { float: true } : {}) });
       }
       case 'text':
         return withId({ k: 'str', v: String(field(b, 'TEXT') ?? '') });
@@ -619,6 +623,9 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         else if (m.type === 'class_ctor') {
           c.ctorParams = paramList(field(m, 'PARAMS'));
           c.ctor = stmts(m.inputs?.DO?.block);
+        } else if (m.type === 'class_abstract') {
+          const comment = m.icons?.comment?.text;
+          c.methods.push({ id: m.id, name: String(field(m, 'NAME') ?? 'methode'), params: paramList(field(m, 'PARAMS')), body: [], returns: false, abstract: true, ...(comment ? { comment } : {}) });
         } else if (m.type === 'class_method') {
           const body = stmts(m.inputs?.DO?.block);
           const comment = m.icons?.comment?.text;

@@ -51,6 +51,7 @@ export class PythonGen extends BaseGen {
 
     const out: string[] = [];
     const imports = [...this.imports].sort();
+    if (this.usesAbc) out.push('from abc import ABC, abstractmethod');
     for (const imp of imports) out.push(`import ${imp}`);
     for (const imp of this.program.meta?.imports ?? []) {
       if (imp.lang !== 'python') continue;
@@ -63,7 +64,8 @@ export class PythonGen extends BaseGen {
       out.unshift(...headerLines);
       mainLines = restLines;
     }
-    if (out.length) out.push('', '');
+    // after the imports: two blank lines before classes and functions, one before the program
+    if (out.length) out.push(...(classLines.length || fnLines.length ? ['', ''] : ['']));
     for (const c of classLines) out.push(...c, '', '');
     for (const f of fnLines) out.push(...f, '', '');
     out.push(...mainLines);
@@ -72,10 +74,15 @@ export class PythonGen extends BaseGen {
     return this.result(out.join('\n'));
   }
 
+  private usesAbc = false;
+
   private emitClass(c: ClassDef) {
     this.withId(c.id, () => {
       if (c.comment) this.comment(c.comment);
-      this.emit(c.base ? `class ${c.name}(${c.base}):` : `class ${c.name}:`);
+      // a class with methods without content is an "abstract base class" (ABC)
+      const abstract = this.h.isAbstract(c) && !c.base;
+      if (abstract) this.usesAbc = true;
+      this.emit(c.base ? `class ${c.name}(${c.base}):` : abstract ? `class ${c.name}(ABC):` : `class ${c.name}:`);
       this.indented(() => {
         let empty = true;
         const plan = this.ctorPlan(c);
@@ -98,6 +105,10 @@ export class PythonGen extends BaseGen {
           this.place = methodPlace(c.name, m.name);
           this.withId(m.id, () => {
             if (m.comment) this.comment(m.comment);
+            if (m.abstract) {
+              this.usesAbc = true;
+              this.emit('@abstractmethod');
+            }
             this.emit(`def ${m.name}(${['self', ...m.params.map((p) => this.id(p))].join(', ')}):`);
             this.indented(() => this.suite(m.body));
           });

@@ -84,6 +84,18 @@ export class Hierarchy {
     return this.ownFields(c).filter((n) => this.fieldOwner(c.name, n) === c.name);
   }
 
+  /** Has the class methods without content (then no object can be made of it)? */
+  isAbstract(c: ClassDef): boolean {
+    return c.methods.some((m) => m.abstract);
+  }
+
+  /** Does the method give back a value (an abstract method: if one of its versions does)? */
+  methodReturns(cls: string, method: string): boolean {
+    const own = this.get(cls)?.methods.find((m) => m.name === method);
+    if (own && !own.abstract) return own.returns;
+    return [this.get(cls)!, ...this.subclasses(cls)].some((c) => c?.methods.some((m) => m.name === method && !m.abstract && m.returns)) || !!own?.returns;
+  }
+
   hasOwnCtor(c: ClassDef): boolean {
     return c.ctorParams.length > 0 || c.ctor.length > 0;
   }

@@ -1098,7 +1098,10 @@ export function parseVba(src: string): ParseResult {
       const params = proc.params.slice(1);
       const place = methodPlace(methodOf.name, name);
       moveHints(proc.name, place, params);
-      methodOf.methods.push({ name, params, body: selfToObject(body), returns: proc.isFunction, ...(proc.comment ? { comment: proc.comment } : {}), ...(proc.defaults?.length ? { defaults: proc.defaults.slice(1) } : {}) });
+      // a method that only raises an error is left to the subclasses (abstract)
+      const onlyRaises = body.length === 1 && body[0].k === 'throw';
+      if (onlyRaises) methodOf.methods.push({ name, params, body: [], returns: false, abstract: true, ...(proc.comment ? { comment: proc.comment } : {}) });
+      else methodOf.methods.push({ name, params, body: selfToObject(body), returns: proc.isFunction, ...(proc.comment ? { comment: proc.comment } : {}), ...(proc.defaults?.length ? { defaults: proc.defaults.slice(1) } : {}) });
       locals[place] = [...(p.vars.get(proc.name) ?? [])].filter((v) => v !== 'self' && !params.some((x) => x.toLowerCase() === v) && !moduleVars.has(v)).map((v) => originalCase(body, v));
       continue;
     }

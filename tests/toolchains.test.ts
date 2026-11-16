@@ -153,6 +153,8 @@ describe('hand-written classes run in every language', () => {
     ...['klassen.py', 'Klassen.java', 'Tiere.cs', 'klassen.cpp', 'klassen.js'].map((f): [string, string] => [f, HUNDE]),
     // inheritance: every animal says its own sound, also in a list of the base class
     ...['vererbung.py', 'Vererbung.java', 'Vererbung.cs', 'vererbung.cpp', 'vererbung.js'].map((f): [string, string] => [f, TIERE]),
+    // abstract methods: every shape computes its own area
+    ['abstrakt.py', 'Rechteck: 6\nQuadrat: 16'],
   ];
   for (const [file, expected] of files) {
     const program = parse(readFileSync(join(dir, file), 'utf8'), langFromFileName(file)!).program;
@@ -247,6 +249,16 @@ describe('text, list and dictionary functions give the same results in every lan
     expect(JSON.stringify(program)).not.toContain('"raw"');
     expect(JSON.stringify(program)).not.toContain('"ext:');
   });
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(lang, async () => {
+      const expected = await runToText(program, lang);
+      expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(normalize(expected));
+    });
+  }
+});
+
+describe('a Java interface becomes an abstract base class in every language', () => {
+  const program = parse(readFileSync(join(__dirname, 'samples', 'Schnittstelle.java'), 'utf8'), 'java').program;
   for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
     it.skipIf(!runner.available)(lang, async () => {
       const expected = await runToText(program, lang);

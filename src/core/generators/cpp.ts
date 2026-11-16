@@ -53,6 +53,11 @@ export class CppGen extends CLikeGen {
     return `${this.h.base(cls)?.name ?? 'Basis'}::`;
   }
 
+  /** "virtual string laut() = 0;": every subclass defines it */
+  protected abstractMethod(_c: ClassDef, m: FunctionDef, ret: string, params: string): string | null {
+    return `virtual ${ret} ${m.name}(${params}) = 0;`;
+  }
+
   /** C++: the base class's constructor is called in the head ": Tier(...)". */
   protected superInitLine(): string | null {
     return null;

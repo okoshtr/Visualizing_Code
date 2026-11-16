@@ -270,7 +270,7 @@ class CParser {
     this.helpers = helperNames(lang);
     // names of the user's classes (known before they are parsed, e.g. for "Hund h;")
     toks.forEach((t, i) => {
-      if (t.t === 'name' && (t.v === 'class' || t.v === 'struct') && toks[i + 1]?.t === 'name' && !this.helpers.has(toks[i + 1].v)) this.userClasses.add(toks[i + 1].v);
+      if (t.t === 'name' && (t.v === 'class' || t.v === 'struct' || (t.v === 'interface' && lang !== 'javascript')) && toks[i + 1]?.t === 'name' && !this.helpers.has(toks[i + 1].v)) this.userClasses.add(toks[i + 1].v);
     });
   }
 
@@ -491,7 +491,7 @@ class CParser {
       this.skipModifiers();
       if (this.isName('class') || this.isName('struct') || this.isName('interface') || this.isName('enum') || this.isName('record')) {
         const isMainClass = (this.lang === 'java' || this.lang === 'csharp') && this.isName('class') && !this.className && this.mainClassAhead();
-        if (!isMainClass && (this.isName('class') || this.isName('struct')) && !this.helpers.has(this.peek().v)) {
+        if (!isMainClass && (this.isName('class') || this.isName('struct') || this.isName('interface')) && !this.helpers.has(this.peek().v)) {
           this.classDecl();
           return;
         }
@@ -595,7 +595,7 @@ class CParser {
           this.skipBalanced();
           return;
         }
-        if (this.isName('class') || this.isName('struct')) {
+        if (this.isName('class') || this.isName('struct') || this.isName('interface')) {
           const beforeClasses = this.classes.length;
           this.classDecl();
           if (pending.length && this.classes.length > beforeClasses) this.classes[beforeClasses].comment = pending.map((c) => (c as any).text).join('\n');
@@ -646,7 +646,7 @@ class CParser {
   fnDepth = 0;
 
   /** Parameters and body of a function, method or constructor (null for a prototype). */
-  parseCallable(retType: string, scope: string, isMain = false): { params: string[]; defaults: Ex[]; body: Stmt[]; declared: Set<string> } | null {
+  parseCallable(retType: string, scope: string, isMain = false): { params: string[]; defaults: Ex[]; body: Stmt[]; declared: Set<string>; prototype?: boolean } | null {
     this.expect('(');
     const params: string[] = [];
     const defaults: Ex[] = [];
@@ -698,7 +698,20 @@ class CParser {
         else this.fail(`"${target}(...)" im Kopf des Konstruktors hat noch keinen Block.`);
       } while (this.eat(','));
     }
-    if (this.eat(';')) return null; // prototype
+    // "virtual string laut() = 0;" (C++): no content, every subclass defines it
+    if (this.lang === 'cpp' && this.is('=') && this.peek().v === '0') this.p += 2;
+    if (this.eat(';')) {
+      // prototype (or abstract method): only the types are known
+      if (!isMain) {
+        paramTypes.forEach((t, i) => {
+          const h = this.hintOf(t);
+          if (h) this.types[`${scope}:${params[i]}`] = h;
+        });
+        const rh = this.hintOf(retType);
+        if (rh) this.types[`${scope}:return`] = rh;
+      }
+      return { params, defaults, body: [], declared: new Set(), prototype: true };
+    }
     const savedScope = this.scope;
     const savedDeclared = this.declaredInScope;
     this.scope = isMain ? '' : scope;
@@ -787,7 +800,7 @@ class CParser {
   functionRest(retType: string, name: string) {
     const isMain = (this.lang === 'java' && name === 'main') || (this.lang === 'csharp' && name === 'Main') || (this.lang === 'cpp' && name === 'main');
     const r = this.parseCallable(retType, name, isMain);
-    if (!r) return;
+    if (!r || r.prototype) return;
     const { params, defaults, body, declared } = r;
     if (this.helpers.has(name)) return;
     if (isMain) {
@@ -835,7 +848,9 @@ class CParser {
 
   /** class / struct with properties, constructor and methods. */
   classDecl(): void {
-    this.p++; // class / struct
+    // an interface becomes a base class whose methods every class defines itself
+    const isInterface = this.isName('interface');
+    this.p++; // class / struct / interface
     const name = this.name();
     if (this.is('<')) this.fail('Generische Klassen haben noch keinen Block.');
     // inheritance: "extends Tier" (Java, JavaScript), ": Tier" (C#), ": public Tier" (C++)
@@ -846,7 +861,12 @@ class CParser {
       if (this.is('.') || this.is('::') || this.is('<')) this.fail('Vererbung von Klassen aus Paketen hat noch keinen Block.');
       if (this.lang === 'csharp' && !this.userClasses.has(base)) this.fail('Schnittstellen und Klassen aus Paketen haben noch keinen Block.');
     }
-    if (this.isName('implements') || this.is(',')) this.fail('Schnittstellen und Mehrfachvererbung haben noch keinen Block.');
+    // class Rechteck implements Form: one interface is like a base class
+    if (!base && this.eatName('implements')) {
+      base = this.name();
+      if (!this.userClasses.has(base)) this.fail('Schnittstellen aus Paketen haben noch keinen Block.');
+    }
+    if (this.isName('implements') || this.is(',')) this.fail('Mehrere Schnittstellen und Mehrfachvererbung haben noch keinen Block.');
     this.expect('{');
     const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [], ...(base ? { base } : {}) };
     // properties of base classes can be used without "this." as well
@@ -872,7 +892,7 @@ class CParser {
           this.ctorHeadNext = true;
           const place = methodPlace(name, CTOR);
           const r = this.parseCallable('void', place);
-          if (r && (r.params.length || r.body.length)) {
+          if (r && !r.prototype && (r.params.length || r.body.length)) {
             cls.ctorParams = r.params;
             cls.ctor = r.body;
             methodLocals.set(place, r.declared);
@@ -890,7 +910,10 @@ class CParser {
           }
           const place = methodPlace(name, mname);
           const r = this.parseCallable('', place)!;
-          cls.methods.push({ name: mname, params: r.params, body: r.body, returns: hasValueReturn(r.body), ...(comment ? { comment } : {}) });
+          // a method that only throws an error is left to the subclasses (JavaScript has no "abstract")
+          const onlyThrows = r.body.length === 1 && r.body[0].k === 'throw';
+          if (onlyThrows) cls.methods.push({ name: mname, params: r.params, body: [], returns: false, abstract: true, ...(comment ? { comment } : {}) });
+          else cls.methods.push({ name: mname, params: r.params, body: r.body, returns: hasValueReturn(r.body), ...(comment ? { comment } : {}) });
           methodLocals.set(place, r.declared);
           continue;
         }
@@ -900,7 +923,8 @@ class CParser {
         if (this.is('(')) {
           const place = methodPlace(name, member);
           const r = this.parseCallable(type, place)!;
-          cls.methods.push({ name: member, params: r.params, body: r.body, returns: type !== 'void', ...(comment ? { comment } : {}) });
+          if (r.prototype || (isInterface && !r.body.length)) cls.methods.push({ name: member, params: r.params, body: [], returns: false, abstract: true, ...(comment ? { comment } : {}) });
+          else cls.methods.push({ name: member, params: r.params, body: r.body, returns: type !== 'void', ...(comment ? { comment } : {}) });
           methodLocals.set(place, r.declared);
           continue;
         }

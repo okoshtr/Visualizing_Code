@@ -525,7 +525,8 @@ export abstract class BaseGen {
       if (imp.lang !== this.lang) this.warnings.add(`Das Paket "${imp.module}" gibt es nur in ${langLabel(imp.lang)}; der Code dafür wird nur übertragen.`);
     }
     if (!this.program.main) this.warnings.add('Es gibt keinen Block "Wenn Programm startet" - das Hauptprogramm ist leer.');
-    const marked = code.replace(/\n{3,}/g, '\n\n').trimEnd().split('\n');
+    // Python (PEP 8) keeps two blank lines around classes and functions, the others one
+    const marked = (this.lang === 'python' ? code.replace(/\n{4,}/g, '\n\n\n') : code.replace(/\n{3,}/g, '\n\n')).trimEnd().split('\n');
     const own = new Map<string, [number, number]>();
     const clean = marked.map((line, i) => {
       let id: string | null = null;

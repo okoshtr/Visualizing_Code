@@ -30,7 +30,12 @@ export class CSharpGen extends CLikeGen {
   }
 
   protected classHead(c: ClassDef): string {
-    return c.base ? `class ${c.name} : ${c.base}` : `class ${c.name}`;
+    const kind = this.h.isAbstract(c) ? 'abstract class' : 'class';
+    return c.base ? `${kind} ${c.name} : ${c.base}` : `${kind} ${c.name}`;
+  }
+
+  protected abstractMethod(_c: ClassDef, m: FunctionDef, ret: string, params: string): string | null {
+    return `public abstract ${ret} ${m.name}(${params});`;
   }
 
   protected superPrefix(): string {

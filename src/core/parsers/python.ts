@@ -406,7 +406,7 @@ class PyParser {
             let module = this.name();
             while (this.eat('.')) module += '.' + this.name();
             const alias = this.eatKw('as') ? this.name() : module;
-            if (!['math', 'random', 'time', 'turtle', 'pathlib'].includes(module) || alias !== module) this.imports.push({ lang: 'python', module, alias });
+            if (!['math', 'random', 'time', 'turtle', 'pathlib', 'abc'].includes(module) || alias !== module) this.imports.push({ lang: 'python', module, alias });
           } while (this.eat(','));
           return this.currentFn ? [] : [IMPORT_MARK()];
         }
@@ -428,6 +428,7 @@ class PyParser {
             names.push(this.eatKw('as') ? `${n} as ${this.name()}` : n);
           } while (this.eat(','));
           if (paren) this.expect(')');
+          if (module === 'abc') return this.currentFn ? [] : [IMPORT_MARK()];
           if (['math', 'random', 'time'].includes(module) && !names.includes('*')) {
             for (const n of names) {
               const [orig, local] = n.split(/\s+as\s+/);
@@ -683,8 +684,10 @@ class PyParser {
     if (this.eat('(')) {
       if (!this.is(')')) {
         const base = this.expr();
-        if (base?.k !== 'var') throw new ParseError('Vererbung von Klassen aus Paketen hat noch keinen Block.', this.tok.s);
-        if (base.name !== 'object') baseName = base.name;
+        // class Tier(ABC) / class Tier(abc.ABC): an abstract base class, no base of its own
+        const isAbc = (base?.k === 'var' && base.name === 'ABC') || (base?.k === 'member' && base.name === 'ABC');
+        if (base?.k !== 'var' && !isAbc) throw new ParseError('Vererbung von Klassen aus Paketen hat noch keinen Block.', this.tok.s);
+        if (base?.k === 'var' && base.name !== 'object' && !isAbc) baseName = base.name;
         if (this.is(',')) throw new ParseError('Mehrfachvererbung hat noch keinen Block.', this.tok.s);
       }
       this.expect(')');
@@ -694,9 +697,20 @@ class PyParser {
     this.expect('', 'indent');
     const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [], ...(baseName ? { base: baseName } : {}) };
     let pending: string[] = [];
+    let abstractNext = false;
     while (!this.is('', 'dedent') && this.cur() !== 'eof') {
       if (this.cur() === 'nl') {
         this.p++;
+        continue;
+      }
+      // @abstractmethod: the next method has no content of its own
+      if (this.is('@')) {
+        this.p++;
+        let deco = this.name();
+        while (this.eat('.')) deco = this.name();
+        if (deco !== 'abstractmethod') throw new ParseError('Dekoratoren haben noch keinen Block.', this.tok.s);
+        abstractNext = true;
+        this.eat('', 'nl');
         continue;
       }
       if (this.cur() === 'comment') {
@@ -710,12 +724,17 @@ class PyParser {
         const { name: mname, params } = JSON.parse(m.id);
         if (params[0] !== 'self') throw new ParseError('Methoden ohne "self" haben noch keinen Block.', this.tok.s);
         const body = superCalls(selfToObject(m.body), baseName);
+        // raise NotImplementedError: also a method that the subclasses define
+        const notImplemented = body.length === 1 && body[0].k === 'throw' && JSON.stringify(body[0]).includes('NotImplementedError');
         if (mname === '__init__') {
           cls.ctorParams = params.slice(1);
           cls.ctor = body;
+        } else if (abstractNext || notImplemented) {
+          cls.methods.push({ name: mname, params: params.slice(1), body: [], returns: false, abstract: true, ...(pending.length ? { comment: pending.join('\n') } : {}) });
         } else {
           cls.methods.push({ name: mname, params: params.slice(1), body, returns: hasReturnValue(body), ...(pending.length ? { comment: pending.join('\n') } : {}) });
         }
+        abstractNext = false;
         pending = [];
         continue;
       }

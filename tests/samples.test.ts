@@ -13,6 +13,8 @@ const TIERE = 'Etwas sagt ...\nBello sagt Wuff\nTweety sagt Piep\nTweety fliegt 
 
 const EXPECTED: Record<string, string> = {
   'vererbung.py': TIERE,
+  'abstrakt.py': 'Rechteck: 6\nQuadrat: 16\n',
+  'Schnittstelle.java': 'Kreis: 3.0\nQuadrat: 4.0\n',
   'Vererbung.java': TIERE,
   'Vererbung.cs': TIERE,
   'vererbung.cpp': TIERE,

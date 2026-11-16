@@ -516,6 +516,8 @@ class Runner {
   /** Creates an object: base classes first, then start values of the properties and the constructor. */
   async create(cls: string, argExprs: Ex[]): Promise<Obj> {
     if (!this.h.get(cls)) this.err(`Die Klasse "${cls}" gibt es nicht.`);
+    const open = this.h.chain(cls).flatMap((c) => c.methods.filter((m) => m.abstract)).find((m) => !this.h.methodOwner(cls, m.name) || this.h.methodOwner(cls, m.name)!.methods.find((x) => x.name === m.name)?.abstract);
+    if (open) this.err(`Von der Klasse "${cls}" kann man kein Objekt erzeugen: Die Methode "${open.name}" hat keinen Inhalt (eine Unterklasse muss sie festlegen).`);
     const obj = new Obj(cls);
     const args: any[] = [];
     for (const a of argExprs) args.push(await this.expr(a));
@@ -565,6 +567,7 @@ class Runner {
     const owner = this.h.methodOwner(from ?? obj.cls, name);
     const m = owner?.methods.find((x) => x.name === name);
     if (!owner || !m) this.err(`Die Klasse "${obj.cls}" hat keine Methode "${name}".`);
+    if (m.abstract) this.err(`Die Methode "${name}" hat in der Klasse "${owner.name}" keinen Inhalt; eine Unterklasse muss sie festlegen.`);
     if (this.stack.length > 1500) this.err('Zu viele verschachtelte Aufrufe (endlose Rekursion?).');
     const args: any[] = [];
     for (const a of argExprs) args.push(await this.expr(a));

@@ -49,6 +49,10 @@ export class JavaScriptGen extends CLikeGen {
     return `constructor(${params})`;
   }
 
+  protected abstractMethod(): string | null {
+    return null;
+  }
+
   protected methodHead(_c: ClassDef, m: FunctionDef, _ret: string, params: string): string {
     return `${m.name}(${params})`;
   }

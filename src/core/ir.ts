@@ -147,6 +147,8 @@ export interface FunctionDef {
   comment?: string;
   /** Parse only: default values of parameters (filled in at the call sites). */
   defaults?: Ex[];
+  /** Method without content that every subclass defines itself (abstract). */
+  abstract?: boolean;
 }
 
 export type TypeName = 'int' | 'double' | 'string' | 'bool' | 'any' | `list<${string}>` | `dict<${string}>` | `obj<${string}>`;
