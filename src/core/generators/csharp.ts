@@ -53,7 +53,7 @@ export class CSharpGen extends CLikeGen {
   }
 
   protected catchDecl(name: string): string {
-    return `Exception ${name}`;
+    return name ? `Exception ${name}` : 'Exception';
   }
 
   protected errorMessage(name: string): Code {

@@ -3,7 +3,7 @@
 import { MAIN, type PlaceInfo, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
 import type { ClassDef, Ex, Expr, FunctionDef, Stmt } from '../ir';
 import { CTOR, methodPlace } from '../ir';
-import { stmtExprs, walkExpr } from '../ir';
+import { stmtExprs, walkAllExprs, walkExpr } from '../ir';
 import { ATOM, BaseGen, type Code, foldPlus, langLabel } from './base';
 
 export const C = { cond: 1, or: 2, and: 3, eq: 5, rel: 6, add: 7, mul: 8, unary: 9, pow: 10 };
@@ -202,6 +202,12 @@ export abstract class CLikeGen extends BaseGen {
           this.tryDepth--;
         }
         this.withCatch((name) => {
+          // C#: "catch (Exception)" when the message is not used (otherwise a compiler warning)
+          let usesMessage = false;
+          walkAllExprs(s.handler, (e) => {
+            if (e.k === 'errmsg') usesMessage = true;
+          });
+          if (this.lang === 'csharp' && !usesMessage) name = '';
           if (this.allman) {
             this.emit('}');
             this.open(`catch (${this.catchDecl(name)})`, () => this.body(s.handler));

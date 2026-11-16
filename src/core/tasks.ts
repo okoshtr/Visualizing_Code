@@ -5,9 +5,13 @@
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
 import { walkAllExprs, walkStmts } from './ir';
 import { RunError, runProgram } from './interpreter';
+import { parse } from './parsers';
+
+/** A reference solution written in Python (easier to read than the program model). */
+const py = (code: string): Program => parse(code, 'python').program;
 
 /** Constructs an exercise can ask for. */
-export type Requirement = 'ask' | 'loop' | 'if' | 'list' | 'dict' | 'class' | `function:${string}`;
+export type Requirement = 'ask' | 'loop' | 'if' | 'list' | 'dict' | 'class' | 'inherit' | 'try' | `function:${string}`;
 
 export interface TaskCase {
   input?: string[];
@@ -103,6 +107,32 @@ export const TASKS: Task[] = [
     },
   },
   {
+    id: 'flaeche',
+    title: 'Fläche eines Rechtecks',
+    level: 1,
+    text: 'Lies die Breite und die Höhe eines Rechtecks als Kommazahlen ein. Gib die Fläche mit genau zwei Stellen nach dem Komma aus, z. B. „Fläche: 7.50“.',
+    hint: 'Zwei Blöcke „frage … und lies Kommazahl“. Die Fläche ist Breite × Höhe. Für die zwei Nachkommastellen gibt es in „Text“ den Block „Zahl mit Nachkommastellen“.',
+    cases: [
+      { input: ['2.5', '3'], output: 'Fläche: 7.50' },
+      { input: ['1', '1'], output: 'Fläche: 1.00' },
+    ],
+    requires: ['ask'],
+    solution: py('breite = float(input("Breite: "))\nhoehe = float(input("Höhe: "))\nprint(f"Fläche: {breite * hoehe:.2f}")\n'),
+  },
+  {
+    id: 'treppe',
+    title: 'Sternen-Treppe',
+    level: 1,
+    text: 'Lies eine ganze Zahl n ein und zeichne eine Treppe aus Sternen: In Zeile 1 steht ein Stern, in Zeile 2 zwei Sterne … bis n Sterne.',
+    hint: 'Eine Schleife „zähle i von 1 bis n“. In „Text“ gibt es einen Block, der einen Text mehrmals wiederholt („*“ i-mal).',
+    cases: [
+      { input: ['3'], output: '*\n**\n***' },
+      { input: ['5'], output: '*\n**\n***\n****\n*****' },
+    ],
+    requires: ['ask', 'loop'],
+    solution: py('n = int(input("Wie hoch? "))\nfor i in range(1, n + 1):\n    print("*" * i)\n'),
+  },
+  {
     id: 'summe',
     title: 'Summe bis 100',
     level: 2,
@@ -184,6 +214,39 @@ export const TASKS: Task[] = [
     },
   },
   {
+    id: 'durchschnitt',
+    title: 'Notendurchschnitt',
+    level: 2,
+    text: 'Lege eine Liste mit den Noten 2, 3, 1, 4 an. Berechne den Durchschnitt und gib ihn mit zwei Nachkommastellen aus: „Durchschnitt: 2.50“.',
+    hint: 'Der Durchschnitt ist die Summe geteilt durch die Anzahl. „Summe“ und „Länge“ findest du bei den Listen, „Zahl mit Nachkommastellen“ bei Text.',
+    cases: [{ output: 'Durchschnitt: 2.50' }],
+    requires: ['list'],
+    solution: py('noten = [2, 3, 1, 4]\nschnitt = sum(noten) / len(noten)\nprint(f"Durchschnitt: {schnitt:.2f}")\n'),
+  },
+  {
+    id: 'eingabe-pruefen',
+    title: 'Falsche Eingaben abfangen',
+    level: 2,
+    text: 'Lies eine ganze Zahl ein und gib das Doppelte aus. Tippt jemand etwas, das keine Zahl ist, soll das Programm nicht abbrechen, sondern „Das ist keine Zahl.“ ausgeben.',
+    hint: 'Steck das Einlesen und die Ausgabe in „versuche … falls ein Fehler auftritt“. Im Fehler-Teil schreibst du die Meldung.',
+    cases: [
+      { input: ['21'], output: '42' },
+      { input: ['abc'], output: 'Das ist keine Zahl.' },
+    ],
+    requires: ['ask', 'try'],
+    solution: py('try:\n    zahl = int(input("Zahl: "))\n    print(zahl * 2)\nexcept ValueError:\n    print("Das ist keine Zahl.")\n'),
+  },
+  {
+    id: 'laengstes-wort',
+    title: 'Das längste Wort',
+    level: 2,
+    text: 'Teile den Satz „Blöcke machen Programmieren leicht“ an den Leerzeichen in Wörter. Gib das längste Wort aus.',
+    hint: '„zerlege Text bei“ (Text) liefert eine Liste der Wörter. Merke dir das bisher längste Wort und vergleiche mit „für jedes Element“ die Längen.',
+    cases: [{ output: 'Programmieren' }],
+    requires: ['loop', 'if'],
+    solution: py('satz = "Blöcke machen Programmieren leicht"\nlaengstes = ""\nfor wort in satz.split(" "):\n    if len(wort) > len(laengstes):\n        laengstes = wort\nprint(laengstes)\n'),
+  },
+  {
     id: 'noten',
     title: 'Notenbuch (Wörterbuch)',
     level: 3,
@@ -232,6 +295,18 @@ export const TASKS: Task[] = [
       ],
     },
   },
+  {
+    id: 'formen',
+    title: 'Formen (Vererbung)',
+    level: 3,
+    text: 'Erstelle eine Klasse „Form“ mit den Methoden flaeche (gibt 0 zurück) und beschreibung (gibt „Form mit Fläche …“ aus). Die Klasse „Rechteck“ erbt von Form, bekommt beim Erzeugen breite und hoehe und berechnet ihre Fläche. „Quadrat“ erbt von Rechteck und bekommt nur die Seite. Gib die Beschreibungen eines 2×3-Rechtecks und eines Quadrats mit Seite 3 aus.',
+    hint: 'Trag bei „erbt von“ die Basisklasse ein. Quadrat ruft beim Erzeugen „Basisklasse erzeugen mit seite, seite“ auf. Die Methode beschreibung steht nur in Form – sie ruft die Methode flaeche von „dieses Objekt“ auf, und jedes Objekt nimmt seine eigene Version.',
+    cases: [{ output: 'Form mit Fläche 6\nForm mit Fläche 9' }],
+    requires: ['class', 'inherit'],
+    solution: py(
+      'class Form:\n    def flaeche(self):\n        return 0\n\n    def beschreibung(self):\n        print("Form mit Fläche " + str(self.flaeche()))\n\n\nclass Rechteck(Form):\n    def __init__(self, breite, hoehe):\n        self.breite = breite\n        self.hoehe = hoehe\n\n    def flaeche(self):\n        return self.breite * self.hoehe\n\n\nclass Quadrat(Rechteck):\n    def __init__(self, seite):\n        super().__init__(seite, seite)\n\n\nRechteck(2, 3).beschreibung()\nQuadrat(3).beschreibung()\n',
+    ),
+  },
 ];
 
 const REQUIREMENT_TEXT: Record<string, string> = {
@@ -241,6 +316,8 @@ const REQUIREMENT_TEXT: Record<string, string> = {
   list: 'Benutze eine Liste.',
   dict: 'Benutze ein Wörterbuch.',
   class: 'Erstelle eine eigene Klasse.',
+  inherit: 'Lass eine Klasse von einer anderen erben („erbt von“).',
+  try: 'Benutze „versuche … falls ein Fehler auftritt“.',
 };
 
 function allStatements(p: Program): Stmt[] {
@@ -254,11 +331,13 @@ function meets(p: Program, r: Requirement): boolean {
     return p.functions.some((f) => f.name.toLowerCase() === name.toLowerCase());
   }
   if (r === 'class') return (p.classes ?? []).length > 0;
+  if (r === 'inherit') return (p.classes ?? []).some((c) => !!c.base);
   let found = false;
   walkStmts(stmts, (s) => {
     if (r === 'loop' && (s.k === 'repeat' || s.k === 'while' || s.k === 'for' || s.k === 'foreach')) found = true;
     if (r === 'if' && s.k === 'if') found = true;
     if (r === 'dict' && s.k === 'dset') found = true;
+    if (r === 'try' && s.k === 'try') found = true;
   });
   walkAllExprs(stmts, (e) => {
     if (r === 'ask' && e.k === 'ask') found = true;
