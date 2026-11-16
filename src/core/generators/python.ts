@@ -108,6 +108,31 @@ export class PythonGen extends BaseGen {
     this.place = MAIN;
   }
 
+  /** A text with a number with decimals: f"Preis: {preis:.2f} Euro" (instead of + f"..." + ). */
+  private fString(parts: Ex[]): string | null {
+    if (!parts.some((p) => p?.k === 'lib' && p.lib === 'text' && p.fn === 'fixed')) return null;
+    let out = '';
+    for (const p of parts) {
+      if (p?.k === 'str') {
+        out += JSON.stringify(p.v).slice(1, -1).replace(/\{/g, '{{').replace(/\}/g, '}}');
+        continue;
+      }
+      const isFixed = p?.k === 'lib' && p.lib === 'text' && p.fn === 'fixed';
+      const code = isFixed ? this.sub(p.args[0]) : this.sub(p);
+      const digits = isFixed ? (p.args[1]?.k === 'num' ? String(p.args[1].v) : `{${this.sub(p.args[1])}}`) : '';
+      // quotes and backslashes are not allowed inside the braces (before Python 3.12)
+      if (/["\\]/.test(code + digits)) return null;
+      out += isFixed ? `{${code}:.${digits}f}` : `{${code}}`;
+    }
+    return `f"${out}"`;
+  }
+
+  /** f"{preis:.2f}" */
+  protected fixedCode(x: Ex, digits: Ex): Code {
+    const d = digits?.k === 'num' ? String(digits.v) : `{${this.sub(digits)}}`;
+    return [`f"{${this.sub(x)}:.${d}f}"`, ATOM];
+  }
+
   private suite(stmts: Stmt[]) {
     const before = this.lines.length;
     this.body(stmts);
@@ -306,10 +331,13 @@ export class PythonGen extends BaseGen {
       case 'random':
         this.imports.add('random');
         return [`random.randint(${this.sub(e.from, 0, { k: 'num', v: 1 })}, ${this.sub(e.to, 0, { k: 'num', v: 10 })})`, ATOM];
-      case 'join':
+      case 'join': {
         if (e.parts.length === 0) return ['""', ATOM];
+        const f = this.fString(e.parts);
+        if (f) return [f, ATOM];
         if (e.parts.length === 1) return [this.str(e.parts[0]), this.isStringy(e.parts[0]) ? 0 : ATOM];
         return [e.parts.map((p, i) => this.str(p, i === 0 ? P.add : P.add + 1)).join(' + '), P.add];
+      }
       case 'len':
         return [`len(${this.sub(e.a)})`, ATOM];
       case 'ask': {

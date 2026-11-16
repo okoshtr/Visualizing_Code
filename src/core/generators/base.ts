@@ -342,6 +342,14 @@ export abstract class BaseGen {
 
   /** Expands a library template like "{0}.upper()". */
   protected template(tpl: string, args: Ex[], defaults: (i: number) => Expr): Code {
+    // fixed numbers are computed: Mid(s, 0 + 1, 3 - 0) -> Mid(s, 1, 3)
+    const lit = (i: string) => {
+      const a = args[Number(i)];
+      return a?.k === 'num' && Number.isInteger(a.v) && !a.float ? a.v : null;
+    };
+    tpl = tpl
+      .replace(/\{(\d)\} - \{(\d)\}/g, (m, a: string, b: string) => (lit(a) !== null && lit(b) !== null ? String(lit(a)! - lit(b)!) : m))
+      .replace(/\{(\d)\} \+ (\d+)(?![\d.])/g, (m, a: string, k: string) => (lit(a) !== null ? String(lit(a)! + Number(k)) : m));
     const code = tpl.replace(/\{(\d)\}/g, (m, n: string, offset: number) => {
       const i = Number(n);
       const before = tpl.slice(0, offset).trimEnd().slice(-1);
@@ -349,6 +357,8 @@ export abstract class BaseGen {
       const free = (before === '' || '(,[:'.includes(before)) && (after === '' || '),]:'.includes(after));
       const postfix = after === '.' || after === '[';
       const minPrec = postfix ? ATOM : free ? 0 : ATOM - 1;
+      // 2.toFixed(1) is not valid JavaScript: (2).toFixed(1)
+      if (postfix && args[i]?.k === 'num') return `(${this.sub(args[i], 0)})`;
       return this.sub(args[i] ?? null, minPrec, defaults(i));
     });
     return [code, isAtomicTemplate(tpl) ? ATOM : 0];
@@ -375,8 +385,17 @@ export abstract class BaseGen {
 
   private readonly droppedNames = new Set<string>();
 
+  /** "Zahl mit Nachkommastellen": the number of digits is part of a text in most languages. */
+  protected fixedCode(x: Ex, digits: Ex): Code | null {
+    return null;
+  }
+
   protected libCode(lib: string, fn: string, args: Ex[], get = false): Code {
     if (isExternalLib(lib)) return this.externalCall(lib, fn, args, get);
+    if (lib === 'text' && fn === 'fixed') {
+      const special = this.fixedCode(args[0] ?? { k: 'num', v: 0 }, args[1] ?? { k: 'num', v: 2 });
+      if (special) return special;
+    }
     const def = findLibFn(lib, fn);
     if (!def) {
       this.warn(`Unbekannte Bibliotheksfunktion ${lib}.${fn}.`);

@@ -54,6 +54,16 @@ export class VbaGen extends BaseGen {
     return this.requestCopy(this.selfCls, owner.name, name);
   }
 
+  /** Format(preis, "0.00") */
+  protected fixedCode(x: Ex, digits: Ex): Code {
+    if (digits?.k === 'num') {
+      const n = Math.max(0, Math.trunc(digits.v));
+      return [`Format(${this.sub(x)}, "${n ? '0.' + '0'.repeat(n) : '0'}")`, ATOM];
+    }
+    const d = this.sub(digits, V.cmp + 1);
+    return [`Format(${this.sub(x)}, IIf(${d} > 0, "0." & String(${d}, "0"), "0"))`, ATOM];
+  }
+
   typeName(t: Ty): string {
     if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return 'Variant';

@@ -2,13 +2,14 @@
 // recognises library calls (via the catalog templates), built-in functions,
 // user function calls, and fixes things that need type information.
 
-import { analyze, isDict, isList } from '../analysis';
+import { analyze, isDict, isList, isNumeric } from '../analysis';
 import { foldPlus } from '../generators/base';
 import type { ClassDef, Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
 import { CTOR, assignedNames, exprEquals, methodPlace } from '../ir';
 import { LIBRARIES, implFor } from '../library';
 import type { ParseResult } from './common';
 import { parseCLikeExpr } from './clike';
+import { idiomExpr, idiomStmt } from './idioms';
 import { parsePythonExpr } from './python';
 import { parseVbaExpr } from './vba';
 
@@ -98,6 +99,7 @@ const EXPR_PATTERNS: Record<Lang, [string, ExprBuilder][]> = {
     ['{9}.nextLine()', () => ask('text')([])],
     ['{9}.nextInt()', () => ask('int')([])],
     ['{9}.nextDouble()', () => ask('float')([])],
+    ['{9}.next()', () => ask('text')([])],
     ['{9}.nextInt({0}) + {1}', rnd],
     ['{9}.nextInt({0})', (h) => rnd([h[0], n(0)])],
     ['(int) (Math.random() * {0}) + {1}', rnd],
@@ -570,6 +572,8 @@ class Normalizer {
     }
     const st = tryPatterns(this.lang, stmtPatterns(this.lang), e);
     if (st) return this.stmt(st.build(st.holes));
+    const idiom = idiomStmt(e, this.lang, (x) => this.expr(x));
+    if (idiom) return idiom;
     if (this.lang === 'javascript' && e.k === 'pcall' && e.callee.k === 'member' && e.callee.name === 'log' && e.callee.obj?.k === 'var' && e.callee.obj.name === 'console') {
       const parts: Ex[] = [];
       e.args.forEach((a, i) => {
@@ -605,6 +609,8 @@ class Normalizer {
     if (lib) return this.children(lib.build(lib.holes));
     const b = tryPatterns(this.lang, builtinPatterns(this.lang), e);
     if (b) return this.children(b.build(b.holes));
+    const idiom = idiomExpr(e, this.lang, (x) => this.expr(x));
+    if (idiom !== undefined) return idiom;
     switch (e.k) {
       case 'pcall': {
         const c = e.callee;
@@ -644,6 +650,11 @@ class Normalizer {
         return this.raw(e);
       }
       case 'pnew': {
+        // arrays: new int[] {1, 2, 3} / new int[5] (five times 0)
+        if (/\[\]$/.test(e.type)) {
+          if (e.init) return { k: 'list', items: e.init.map((x) => this.expr(x)) };
+          if (e.args.length === 1) return { k: 'lib', lib: 'list', fn: 'filled', args: [this.expr(e.args[0]), defaultOfType(e.type.slice(0, -2))] };
+        }
         const t = e.type.replace(/<.*$/s, '').replace(/^(java\.util\.|System\.Collections\.Generic\.|std::)/, '');
         const userCls = this.classNames.get(this.key(t));
         if (userCls && !e.init) return { k: 'new', cls: userCls, args: e.args.map((a) => this.expr(a)) };
@@ -854,6 +865,9 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
           if (isDict(t(e.list))) return { k: 'dget', dict: e.list, key: e.index };
           return e;
         case 'lib':
+          // xs.count(3) looks like "Banane".count("an"); the type decides
+          if (e.lib === 'text' && e.fn === 'count' && isList(t(e.args[0]))) return { ...e, lib: 'list' };
+          if (e.lib === 'list' && e.fn === 'count' && t(e.args[0]) === 'string') return { ...e, lib: 'text' };
           if ((e.lib === 'text' || e.lib === 'list') && e.fn === 'contains' && isDict(t(e.args[0]))) return { ...e, lib: 'dict', fn: 'has' };
           if (e.lib === 'text' && (e.fn === 'contains' || e.fn === 'indexOf') && isList(t(e.args[0]))) return { ...e, lib: 'list' };
           if (e.lib === 'list' && (e.fn === 'contains' || e.fn === 'indexOf') && isStr(e.args[0])) return { ...e, lib: 'text' };
@@ -886,6 +900,8 @@ function fixDictStatements(p: Program): Program {
       const isD = (x: Ex) => isDict(a.typeOf(x, place));
       if (s.k === 'listset' && isD(s.list)) s = { k: 'dset', dict: s.list, key: s.index, value: s.value, gap: s.gap, trail: s.trail, id: s.id };
       if (s.k === 'libstmt' && s.lib === 'list' && s.fn === 'removeAt' && isD(s.args[0])) s = { ...s, lib: 'dict', fn: 'remove' };
+      // names.remove("Ada") (Java) removes the value, not a position
+      else if (s.k === 'libstmt' && s.lib === 'list' && s.fn === 'removeAt' && s.args[1] && !isNumeric(a.typeOf(s.args[1], place))) s = { ...s, fn: 'removeValue' };
       if (s.k === 'listadd' && isD(s.list)) s = { k: 'raw', code: '?', lang: p.meta?.sourceLang ?? 'python' };
       // for (k of d.keys()) / d.keySet() / d.Keys  ->  for each key of d
       if (s.k === 'foreach') {
@@ -914,6 +930,15 @@ function fixDictStatements(p: Program): Program {
         }
       : {}),
   };
+}
+
+/** Start value of an array element: 0, 0.0, false or "". */
+export function defaultOfType(type: string): Expr {
+  const t = type.trim();
+  if (/^(double|float|Double|Float|decimal)$/.test(t)) return { k: 'num', v: 0, float: true };
+  if (/^(boolean|bool|Boolean)$/.test(t)) return { k: 'bool', v: false };
+  if (/^(String|string)$/.test(t)) return { k: 'str', v: '' };
+  return { k: 'num', v: 0 };
 }
 
 /** Hund(name) { super(name); } */

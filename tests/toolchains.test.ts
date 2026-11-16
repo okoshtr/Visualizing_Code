@@ -195,3 +195,62 @@ describe('print with several values prints the same everywhere', () => {
     });
   }
 });
+
+describe('numbers with decimals are formatted and rounded like each language does', () => {
+  const program = parse(
+    [
+      'preis = 3.5',
+      'n = 1',
+      'print(f"Preis: {preis:.2f} Euro")',
+      'print(f"{preis:.{n}f}")',
+      'print(f"{2.5:.0f} {0.125:.2f} {2.675:.2f} {-1.5:.0f} {1234.5678:.1f} {7:.3f}")',
+      'print(round(2.346, 2), round(1.005, 2), round(2.5, 0), round(-0.125, 2))',
+      'print("{} kostet {:.1f}".format("Brot", preis))',
+      'print("%.3f" % (1 / 3))',
+    ].join('\n') + '\n',
+    'python',
+  ).program;
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(lang, async () => {
+      const expected = await runToText(program, lang);
+      expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(normalize(expected));
+    });
+  }
+});
+
+describe('text, list and dictionary functions give the same results in every language', () => {
+  const program = parse(
+    [
+      'text = "Banane"',
+      'zahlen = [5, 3, 8, 3]',
+      'print(text.count("an"), zahlen.count(3))',
+      'print("123".isdigit(), "12a".isdigit(), "".isdigit())',
+      'print(ord("A"), chr(66))',
+      's = sorted(zahlen)',
+      'print(s)',
+      'print(zahlen)',
+      'zahlen.remove(3)',
+      'print(zahlen)',
+      'letzte = zahlen.pop()',
+      'print(letzte)',
+      'zahlen.pop()',
+      'print(len(zahlen), zahlen[0])',
+      'nullen = [0] * 4',
+      'print(len(nullen), nullen[3])',
+      'noten = {"Mathe": 2}',
+      'print(noten.get("Mathe", 0), noten.get("Kunst", 6))',
+      'print(round(2.346, 2), f"{3.14159:.3f}")',
+    ].join('\n') + '\n',
+    'python',
+  ).program;
+  it('is read without code blocks', () => {
+    expect(JSON.stringify(program)).not.toContain('"raw"');
+    expect(JSON.stringify(program)).not.toContain('"ext:');
+  });
+  for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
+    it.skipIf(!runner.available)(lang, async () => {
+      const expected = await runToText(program, lang);
+      expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(normalize(expected));
+    });
+  }
+});

@@ -23,6 +23,12 @@ export class CSharpGen extends CLikeGen {
     return `public ${super.fieldDecl(t, name, value)}`;
   }
 
+  /** preis.ToString("F2") */
+  protected fixedCode(x: Ex, digits: Ex): Code {
+    const fmt = digits?.k === 'num' ? `"F${digits.v}"` : `"F" + ${this.sub(digits, C.add + 1)}`;
+    return [`${this.sub(x, ATOM)}.ToString(${fmt})`, ATOM];
+  }
+
   protected classHead(c: ClassDef): string {
     return c.base ? `class ${c.name} : ${c.base}` : `class ${c.name}`;
   }
@@ -170,7 +176,7 @@ export class CSharpGen extends CLikeGen {
       this.withId(this.program.mainId, () => this.open('static void Main()', () => {
         const body = this.capture(() => this.functionBody(this.a.place(MAIN)));
         // decimal point instead of the comma of the system language (also for double.Parse)
-        if (/\bdouble\b|\d\.\d/.test([...body, ...fns.flat()].join('\n'))) {
+        if (/\bdouble\b|\d\.\d|ToString\("F/.test([...body, ...fns.flat()].join('\n'))) {
           this.emit('CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;');
           this.imports.add('System.Globalization');
         }

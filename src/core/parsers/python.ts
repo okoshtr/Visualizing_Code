@@ -648,6 +648,14 @@ class PyParser {
     this.expectKw('in');
     const iter = this.expr();
     const body = this.block();
+    // for i in reversed(range(a, b)): counting down from b - 1 to a
+    if (iter?.k === 'pcall' && iter.callee.k === 'var' && iter.callee.name === 'reversed' && iter.args.length === 1) {
+      const r = iter.args[0];
+      if (r?.k === 'pcall' && r.callee.k === 'var' && r.callee.name === 'range' && (r.args.length === 1 || r.args.length === 2) && !r.kwargs) {
+        const from = r.args.length === 2 ? r.args[0] : { k: 'num' as const, v: 0 };
+        return { k: 'for', var: name, from: foldPlus(r.args[r.args.length - 1], -1), to: from, by: { k: 'num', v: -1 }, body };
+      }
+    }
     if (iter?.k === 'pcall' && iter.callee.k === 'var' && iter.callee.name === 'range' && !iter.kwargs) {
       const a = iter.args;
       const used = usesName(body, name);
@@ -1097,6 +1105,14 @@ class PyParser {
           if (depth > 0) j++;
         }
         const inner = raw.slice(i + 1, j);
+        // {preis:.2f} / {preis:.{n}f}: number with decimals
+        const spec = /^(.*?):\.(\d+|\{[^{}]+\})f$/s.exec(inner);
+        if (spec && !/\[[^\]]*$/.test(spec[1])) {
+          const digits: Ex = spec[2].startsWith('{') ? parsePythonExpr(spec[2].slice(1, -1)) : { k: 'num', v: Number(spec[2]) };
+          parts.push({ k: 'lib', lib: 'text', fn: 'fixed', args: [parsePythonExpr(spec[1]), digits] });
+          i = j;
+          continue;
+        }
         if (/![rsa]$|:[^\]\)]*$/.test(inner) && !/\[.*:.*\]/.test(inner)) throw new ParseError('Formatangaben in f-Strings haben noch keinen Block.', tok.s);
         parts.push(parsePythonExpr(inner.replace(/=$/, '')));
         i = j;

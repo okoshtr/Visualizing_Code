@@ -146,6 +146,15 @@ export class JavaGen extends CLikeGen {
     return super.eqCode(a, b, neg);
   }
 
+  /** String.format(Locale.ROOT, "%.2f", preis): a point as decimal separator on every computer */
+  protected fixedCode(x: Ex, digits: Ex): Code {
+    this.imports.add('java.util.Locale');
+    const fmt = digits?.k === 'num' ? `"%.${digits.v}f"` : `"%." + ${this.sub(digits, C.add + 1)} + "f"`;
+    // %f needs a double: 7 -> 7.0, n -> (double) n
+    const value = this.typeOf(x) === 'int' ? (x?.k === 'num' ? `${x.v}.0` : `(double) ${this.sub(x, C.unary)}`) : this.sub(x);
+    return [`String.format(Locale.ROOT, ${fmt}, ${value})`, ATOM];
+  }
+
   protected classHead(c: ClassDef): string {
     return c.base ? `static class ${c.name} extends ${c.base}` : `static class ${c.name}`;
   }

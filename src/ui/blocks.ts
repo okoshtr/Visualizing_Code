@@ -1304,6 +1304,7 @@ export const TOOLBOX = {
         { kind: 'block', type: 'text_length', inputs: { VALUE: txt('Hallo') } },
         libBlock('text', 'upper', false),
         libBlock('text', 'contains', false),
+        libBlock('text', 'fixed', false),
       ],
     },
     { kind: 'category', name: 'Variablen', categorystyle: 'variable_category', custom: 'VARIABLE' },
@@ -1320,6 +1321,7 @@ export const TOOLBOX = {
         { kind: 'block', type: 'lists_length' },
         libBlock('list', 'sort', true),
         libBlock('list', 'contains', false),
+        libBlock('list', 'filled', false),
       ],
     },
     {
@@ -1367,6 +1369,7 @@ export const TOOLBOX = {
         { kind: 'block', type: 'dict_get', inputs: { KEY: txt('Anna') } },
         { kind: 'block', type: 'dict_set', inputs: { KEY: txt('Clara'), VALUE: num(11) } },
         libBlock('dict', 'has', false),
+        libBlock('dict', 'get', false),
         libBlock('dict', 'keys', false),
         libBlock('dict', 'size', false),
         libBlock('dict', 'remove', true),

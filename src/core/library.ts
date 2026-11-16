@@ -35,7 +35,7 @@ export interface LangImpl {
  * Return type: a concrete type, "same" (type of first argument), "elem"
  * (element type of the first argument, which is a list) or null (statement).
  */
-export type LibReturn = 'int' | 'double' | 'string' | 'bool' | 'list<string>' | 'same' | 'elem' | 'keys' | 'values' | null;
+export type LibReturn = 'int' | 'double' | 'string' | 'bool' | 'list<string>' | 'same' | 'elem' | 'keys' | 'values' | 'value' | 'listOf1' | 'arg0' | null;
 
 export interface LibFn {
   id: string;
@@ -58,6 +58,82 @@ export interface LibRuntime {
   turtle(op: string, args: any[]): void;
   /** C++ (std::map) goes through the keys of a dictionary in sorted order. */
   sortedKeys?: boolean;
+  /** Language whose rules apply (e.g. how 2.5 is rounded). */
+  lang?: Lang;
+}
+
+/** Is x · 10^n exactly halfway between two whole numbers? (computed with doubles, like C#/VBA do) */
+function isTie(x: number, n: number): boolean {
+  const scaled = x * 10 ** n;
+  return !Number.isInteger(scaled) && Number.isInteger(scaled * 2);
+}
+
+/** Rounds halfway values to the even neighbour. */
+function roundHalfEven(scaled: number): number {
+  const r = Math.round(scaled);
+  return Math.abs(scaled % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r;
+}
+
+/**
+ * x · 10^n rounded to a whole number, computed exactly from the binary value of x
+ * (2.675 is really 2.67499999…). Halfway values go to the even number or away from zero.
+ */
+function exactScaled(x: number, n: number, ties: 'even' | 'away'): bigint {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, Math.abs(x));
+  const hi = view.getUint32(0);
+  const lo = view.getUint32(4);
+  const e = (hi >>> 20) & 0x7ff;
+  let mant = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
+  let exp = -1074;
+  if (e !== 0) {
+    mant |= 1n << 52n;
+    exp = e - 1075;
+  }
+  const num = mant * 10n ** BigInt(n);
+  if (exp >= 0) return num << BigInt(exp);
+  const den = 1n << BigInt(-exp);
+  let q = num / den;
+  const twice = (num % den) * 2n;
+  if (twice > den || (twice === den && (ties === 'away' || q % 2n === 1n))) q += 1n;
+  return q;
+}
+
+/** Rounds a decimal text such as "2.675" to n places, halfway values away from zero. */
+function roundDecimalText(text: string, n: number): string | null {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!m) return null;
+  const frac = (m[2] ?? '').padEnd(n + 1, '0');
+  let q = BigInt(m[1] + frac.slice(0, n));
+  if (frac[n] >= '5') q += 1n;
+  const digits = q.toString().padStart(n + 1, '0');
+  return n ? `${digits.slice(0, -n)}.${digits.slice(-n)}` : digits;
+}
+
+/** A number as text with n decimal places, rounded like the language does it. */
+export function formatFixed(x: number, n: number, lang?: Lang): string {
+  n = Math.max(0, Math.min(20, Math.trunc(n)));
+  if (!Number.isFinite(x)) return String(x);
+  // Java rounds the shortest decimal form ("2.675" -> 2.68), VBA works with 15 digits
+  if (lang === 'java' || lang === 'vba') {
+    const t = roundDecimalText(lang === 'java' ? String(Math.abs(x)) : String(Number(Math.abs(x).toPrecision(15))), n);
+    if (t !== null) return x < 0 ? `-${t}` : t;
+  }
+  // exact halfway values: Python, C/C++ printf and .NET go to the even digit; Java, JavaScript and VBA away from zero
+  const q = exactScaled(x, n, lang === 'python' || lang === 'cpp' || lang === 'csharp' ? 'even' : 'away');
+  const digits = q.toString().padStart(n + 1, '0');
+  const text = n ? `${digits.slice(0, -n)}.${digits.slice(-n)}` : digits;
+  return x < 0 ? `-${text}` : text;
+}
+
+/** Rounds to n decimal places like round(x, n) / Math.Round(x, n) / Round(x, n). */
+export function roundTo(x: number, n: number, lang?: Lang): number {
+  const f = 10 ** Math.trunc(n);
+  // Python rounds the exact value; C# and VBA round x · 10^n (a double) to even
+  if (lang === 'python') return Number(exactScaled(x, Math.trunc(n), 'even')) * Math.sign(x) / f;
+  if (lang === 'csharp' || lang === 'vba') return isTie(x, n) ? roundHalfEven(x * f) / f : Math.round(x * f) / f;
+  if (lang === 'cpp') return (Math.sign(x) * Math.round(Math.abs(x) * f)) / f;
+  return Math.round(x * f) / f;
 }
 
 /** Keys of a dictionary in the order the language goes through them. */
@@ -147,6 +223,25 @@ export const LIBRARIES: Library[] = [
         },
         run: ([a, b]) => Math[f](Number(a), Number(b)),
       })),
+      {
+        id: 'roundTo',
+        label: 'runde auf Stellen',
+        tooltip: 'Rundet auf so viele Stellen nach dem Komma, z. B. 2.346 auf 2 Stellen: 2.35.',
+        params: [
+          { name: 'Zahl', kind: 'number', def: 2.346 },
+          { name: 'Stellen', kind: 'number', def: 2 },
+        ],
+        returns: 'double',
+        impl: {
+          python: 'round({0}, {1})',
+          java: T('roundTo({0}, {1})', { helpers: ['roundTo'] }),
+          javascript: T('roundTo({0}, {1})', { helpers: ['roundTo'] }),
+          csharp: 'Math.Round({0}, {1})',
+          cpp: T('roundTo({0}, {1})', { helpers: ['roundTo'] }),
+          vba: 'Round({0}, {1})',
+        },
+        run: ([x, n], rt) => roundTo(Number(x), Number(n), rt.lang),
+      },
       {
         id: 'pi',
         label: 'Pi (π)',
@@ -281,7 +376,7 @@ export const LIBRARIES: Library[] = [
           java: '{0}.indexOf({1})',
           javascript: '{0}.indexOf({1})',
           csharp: '{0}.IndexOf({1})',
-          cpp: '(int) {0}.find({1})',
+          cpp: T('(int) {0}.find({1})', { alt: ['{0}.find({1})'] }),
           vba: '(InStr({0}, {1}) - 1)',
         },
         run: ([t, p]) => s(t).indexOf(s(p)),
@@ -335,7 +430,7 @@ export const LIBRARIES: Library[] = [
         returns: 'string',
         impl: {
           python: '{0}[{1}]',
-          java: 'String.valueOf({0}.charAt({1}))',
+          java: T('String.valueOf({0}.charAt({1}))', { alt: ['{0}.charAt({1})'] }),
           javascript: '{0}.charAt({1})',
           csharp: '{0}[{1}].ToString()',
           cpp: 'string(1, {0}[{1}])',
@@ -360,7 +455,7 @@ export const LIBRARIES: Library[] = [
           python: '{0}.split({1})',
           java: T('new ArrayList<>(Arrays.asList({0}.split(Pattern.quote({1}))))', { imports: ['java.util.regex.Pattern'] }),
           javascript: '{0}.split({1})',
-          csharp: 'new List<string>({0}.Split({1}))',
+          csharp: T('new List<string>({0}.Split({1}))', { alt: ['{0}.Split({1})'] }),
           cpp: T('split({0}, {1})', { helpers: ['split'] }),
           vba: 'Split({0}, {1})',
         },
@@ -416,6 +511,93 @@ export const LIBRARIES: Library[] = [
           vba: 'StrReverse({0})',
         },
         run: ([t]) => [...s(t)].reverse().join(''),
+      },
+      {
+        id: 'fixed',
+        label: 'Zahl mit Nachkommastellen',
+        tooltip: 'Schreibt eine Zahl als Text mit genau so vielen Stellen nach dem Komma, z. B. 3.5 mit 2 Stellen als "3.50".',
+        params: [
+          { name: 'Zahl', kind: 'number', def: 3.14159 },
+          { name: 'Stellen', kind: 'number', def: 2 },
+        ],
+        returns: 'string',
+        // Python, Java, C# and VBA are written by the generators (the digits are part of a text there)
+        impl: {
+          python: T('f"{{0}:.{1}f}"', { match: false }),
+          java: T('String.format(Locale.ROOT, "%.{1}f", {0})', { match: false }),
+          javascript: '{0}.toFixed({1})',
+          csharp: T('{0}.ToString("F{1}")', { match: false }),
+          cpp: T('formatFixed({0}, {1})', { helpers: ['formatFixed'] }),
+          vba: T('Format({0}, "0.00")', { match: false }),
+        },
+        run: ([x, n], rt) => formatFixed(Number(x), Number(n), rt.lang),
+      },
+      {
+        id: 'count',
+        label: 'Anzahl von',
+        tooltip: 'Wie oft ein Teiltext vorkommt, z. B. "a" in "Banane": 2.',
+        params: [
+          { name: 'Text', kind: 'text', def: 'Banane' },
+          { name: 'Teil', kind: 'text', def: 'a' },
+        ],
+        returns: 'int',
+        impl: {
+          python: '{0}.count({1})',
+          java: T('countText({0}, {1})', { helpers: ['countText'] }),
+          javascript: '{0}.split({1}).length - 1',
+          csharp: T('CountText({0}, {1})', { helpers: ['CountText'] }),
+          cpp: T('countText({0}, {1})', { helpers: ['countText'] }),
+          vba: '(Len({0}) - Len(Replace({0}, {1}, ""))) \\ Len({1})',
+        },
+        run: ([t, p]) => (s(p) === '' ? 0 : s(t).split(s(p)).length - 1),
+      },
+      {
+        id: 'isDigits',
+        label: 'besteht nur aus Ziffern',
+        tooltip: 'Wahr, wenn der Text nur aus den Ziffern 0 bis 9 besteht (z. B. um eine Eingabe zu prüfen).',
+        params: [{ name: 'Text', kind: 'text', def: '123' }],
+        returns: 'bool',
+        impl: {
+          python: '{0}.isdigit()',
+          java: '{0}.matches("[0-9]+")',
+          javascript: T('isDigits({0})', { helpers: ['isDigits'] }),
+          csharp: T('IsDigits({0})', { helpers: ['IsDigits'] }),
+          cpp: T('isDigits({0})', { helpers: ['isDigits'] }),
+          vba: T('IsDigits({0})', { helpers: ['IsDigits'] }),
+        },
+        run: ([t]) => /^[0-9]+$/.test(s(t)),
+      },
+      {
+        id: 'code',
+        label: 'Zeichencode von',
+        tooltip: 'Die Nummer eines Zeichens, z. B. "A": 65.',
+        params: [{ name: 'Zeichen', kind: 'text', def: 'A' }],
+        returns: 'int',
+        impl: {
+          python: 'ord({0})',
+          java: '(int) {0}.charAt(0)',
+          javascript: '{0}.charCodeAt(0)',
+          csharp: '(int) {0}[0]',
+          cpp: '(int) {0}[0]',
+          vba: 'AscW({0})',
+        },
+        run: ([t], rt) => (s(t).length ? s(t).charCodeAt(0) : rt.error('Der Text ist leer.')),
+      },
+      {
+        id: 'fromCode',
+        label: 'Zeichen mit Code',
+        tooltip: 'Das Zeichen zu einer Nummer, z. B. 66: "B".',
+        params: [{ name: 'Code', kind: 'number', def: 66 }],
+        returns: 'string',
+        impl: {
+          python: 'chr({0})',
+          java: 'String.valueOf((char) {0})',
+          javascript: 'String.fromCharCode({0})',
+          csharp: '((char) {0}).ToString()',
+          cpp: 'string(1, (char) {0})',
+          vba: 'ChrW({0})',
+        },
+        run: ([n]) => String.fromCharCode(Number(n)),
       },
     ],
   },
@@ -588,6 +770,122 @@ export const LIBRARIES: Library[] = [
           return list.reduce((a, b) => (f === 'min' ? (b < a ? b : a) : b > a ? b : a));
         },
       })),
+      {
+        id: 'sorted',
+        label: 'sortierte Kopie',
+        tooltip: 'Eine neue, sortierte Liste; die ursprüngliche Liste bleibt, wie sie ist.',
+        params: [{ name: 'Liste', kind: 'list' }],
+        returns: 'arg0',
+        impl: {
+          python: 'sorted({0})',
+          java: T('sortedCopy({0})', { helpers: ['sortedCopy'] }),
+          javascript: T('sortedCopy({0})', { helpers: ['sortedCopy'] }),
+          csharp: T('SortedCopy({0})', { helpers: ['SortedCopy'] }),
+          cpp: T('sortedCopy({0})', { helpers: ['sortedCopy'] }),
+          vba: T('SortedCopy({0})', { helpers: ['SortedCopy', 'SortList'] }),
+        },
+        run: ([l], rt) => [...checkList(l, rt)].sort(cmp),
+      },
+      {
+        id: 'filled',
+        label: 'Liste mit gleichen Werten',
+        tooltip: 'Eine neue Liste, in der ein Wert so oft steht, z. B. 5-mal 0 (wie ein Array).',
+        params: [
+          { name: 'Anzahl', kind: 'number', def: 5 },
+          { name: 'Wert', kind: 'any', def: 0 },
+        ],
+        returns: 'listOf1',
+        impl: {
+          python: '[{1}] * {0}',
+          java: T('new ArrayList<>(Collections.nCopies({0}, {1}))', { imports: ['java.util.Collections'] }),
+          javascript: 'new Array({0}).fill({1})',
+          csharp: T('Enumerable.Repeat({1}, {0}).ToList()', { imports: ['System.Linq'] }),
+          cpp: T('vector<int>({0}, {1})', { match: false }),
+          vba: T('FilledList({0}, {1})', { helpers: ['FilledList'] }),
+        },
+        run: ([n, v]) => Array.from({ length: Math.max(0, Math.trunc(Number(n))) }, () => v),
+      },
+      {
+        id: 'removeLast',
+        label: 'entferne das letzte Element',
+        params: [{ name: 'Liste', kind: 'list' }],
+        returns: null,
+        impl: {
+          python: '{0}.pop()',
+          java: '{0}.remove({0}.size() - 1)',
+          javascript: '{0}.pop()',
+          csharp: '{0}.RemoveAt({0}.Count - 1)',
+          cpp: '{0}.pop_back()',
+          vba: T('RemoveAt {0}, UBound({0})', { helpers: ['RemoveAt'] }),
+        },
+        run: ([l], rt) => {
+          const list = checkList(l, rt);
+          if (!list.length) rt.error('Die Liste ist leer.');
+          list.pop();
+        },
+      },
+      {
+        id: 'pop',
+        label: 'letztes Element herausnehmen',
+        tooltip: 'Liefert das letzte Element und entfernt es aus der Liste.',
+        params: [{ name: 'Liste', kind: 'list' }],
+        returns: 'elem',
+        impl: {
+          python: '{0}.pop()',
+          java: '{0}.remove({0}.size() - 1)',
+          javascript: '{0}.pop()',
+          csharp: T('PopLast({0})', { helpers: ['PopLast'] }),
+          cpp: T('popLast({0})', { helpers: ['popLast'] }),
+          vba: T('PopLast({0})', { helpers: ['PopLast', 'RemoveAt'] }),
+        },
+        run: ([l], rt) => {
+          const list = checkList(l, rt);
+          if (!list.length) rt.error('Die Liste ist leer.');
+          return list.pop();
+        },
+      },
+      {
+        id: 'removeValue',
+        label: 'entferne den Wert',
+        tooltip: 'Entfernt das erste Element mit diesem Wert (falls es eins gibt).',
+        params: [
+          { name: 'Liste', kind: 'list' },
+          { name: 'Wert', kind: 'any', def: 0 },
+        ],
+        returns: null,
+        impl: {
+          python: '{0}.remove({1})',
+          java: T('{0}.remove((Object) {1})', { byType: { int: '{0}.remove(Integer.valueOf({1}))', double: '{0}.remove(Double.valueOf({1}))' } }),
+          javascript: T('removeValue({0}, {1})', { helpers: ['removeValue'] }),
+          csharp: '{0}.Remove({1})',
+          cpp: T('removeValue({0}, {1})', { helpers: ['removeValue'] }),
+          vba: T('RemoveValue {0}, {1}', { helpers: ['RemoveValue', 'RemoveAt'] }),
+        },
+        run: ([l, v], rt) => {
+          const list = checkList(l, rt);
+          const i = list.findIndex((x) => x === v);
+          if (i >= 0) list.splice(i, 1);
+        },
+      },
+      {
+        id: 'count',
+        label: 'Anzahl von',
+        tooltip: 'Wie oft ein Wert in der Liste vorkommt.',
+        params: [
+          { name: 'Liste', kind: 'list' },
+          { name: 'Wert', kind: 'any', def: 1 },
+        ],
+        returns: 'int',
+        impl: {
+          python: '{0}.count({1})',
+          java: T('Collections.frequency({0}, {1})', { imports: ['java.util.Collections'] }),
+          javascript: T('countOf({0}, {1})', { helpers: ['countOf'] }),
+          csharp: T('CountOf({0}, {1})', { helpers: ['CountOf'] }),
+          cpp: T('count({0}.begin(), {0}.end(), {1})', { imports: ['<algorithm>'] }),
+          vba: T('ListCount({0}, {1})', { helpers: ['ListCount'] }),
+        },
+        run: ([l, v], rt) => checkList(l, rt).filter((x) => x === v).length,
+      },
     ],
   },
   {
@@ -607,10 +905,33 @@ export const LIBRARIES: Library[] = [
           java: '{0}.containsKey({1})',
           javascript: '{0}.has({1})',
           csharp: '{0}.ContainsKey({1})',
-          cpp: '({0}.count({1}) > 0)',
+          cpp: T('({0}.count({1}) > 0)', { alt: ['{0}.count({1})'] }),
           vba: '{0}.Exists({1})',
         },
         run: ([d, k], rt) => checkDict(d, rt).has(k),
+      },
+      {
+        id: 'get',
+        label: 'Wert zu Schlüssel oder sonst',
+        tooltip: 'Der Wert zum Schlüssel; gibt es den Schlüssel nicht, der Wert bei „sonst“.',
+        params: [
+          { name: 'Wörterbuch', kind: 'dict' },
+          { name: 'Schlüssel', kind: 'any', def: 'a' },
+          { name: 'sonst', kind: 'any', def: 0 },
+        ],
+        returns: 'value',
+        impl: {
+          python: '{0}.get({1}, {2})',
+          java: '{0}.getOrDefault({1}, {2})',
+          javascript: '({0}.has({1}) ? {0}.get({1}) : {2})',
+          csharp: '{0}.GetValueOrDefault({1}, {2})',
+          cpp: '({0}.count({1}) ? {0}[{1}] : {2})',
+          vba: 'IIf({0}.Exists({1}), {0}({1}), {2})',
+        },
+        run: ([d, k, def], rt) => {
+          const m = checkDict(d, rt);
+          return m.has(k) ? m.get(k) : def;
+        },
       },
       {
         id: 'keys',
@@ -921,6 +1242,28 @@ export const externalModule = (lib: string) => lib.slice(4);
 
 export const HELPERS: Partial<Record<Lang, Record<string, { code: string; imports?: string[]; random?: boolean }>>> = {
   java: {
+    sortedCopy: {
+      imports: ['java.util.Collections'],
+      code: `static <T extends Comparable<T>> ArrayList<T> sortedCopy(List<T> list) {
+    ArrayList<T> copy = new ArrayList<>(list);
+    Collections.sort(copy);
+    return copy;
+}`,
+    },
+    roundTo: {
+      code: `static double roundTo(double x, int digits) {
+    double factor = Math.pow(10, digits);
+    return Math.round(x * factor) / factor;
+}`,
+    },
+    countText: {
+      code: `static int countText(String text, String part) {
+    if (part.isEmpty()) return 0;
+    int count = 0;
+    for (int i = text.indexOf(part); i >= 0; i = text.indexOf(part, i + part.length())) count++;
+    return count;
+}`,
+    },
     Turtle: {
       code: `static class Turtle {
     static double x = 0, y = 0, angle = 0, size = 1;
@@ -1010,6 +1353,33 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   javascript: {
+    sortedCopy: {
+      code: `function sortedCopy(list) {
+  return [...list].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}`,
+    },
+    roundTo: {
+      code: `function roundTo(x, digits) {
+  const factor = 10 ** digits;
+  return Math.round(x * factor) / factor;
+}`,
+    },
+    isDigits: {
+      code: `function isDigits(text) {
+  return /^[0-9]+$/.test(text);
+}`,
+    },
+    removeValue: {
+      code: `function removeValue(list, value) {
+  const i = list.indexOf(value);
+  if (i >= 0) list.splice(i, 1);
+}`,
+    },
+    countOf: {
+      code: `function countOf(list, value) {
+  return list.filter((x) => x === value).length;
+}`,
+    },
     turtle: {
       code: `const turtle = {
   x: 0, y: 0, angle: 0, size: 1, down: true, color: "black", lines: [],
@@ -1072,6 +1442,47 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   csharp: {
+    SortedCopy: {
+      code: `static List<T> SortedCopy<T>(List<T> list)
+{
+    var copy = new List<T>(list);
+    copy.Sort();
+    return copy;
+}`,
+    },
+    CountText: {
+      code: `static int CountText(string text, string part)
+{
+    if (part.Length == 0) return 0;
+    int count = 0;
+    for (int i = text.IndexOf(part, StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, StringComparison.Ordinal)) count++;
+    return count;
+}`,
+    },
+    IsDigits: {
+      code: `static bool IsDigits(string text)
+{
+    if (text.Length == 0) return false;
+    foreach (char c in text) if (c < '0' || c > '9') return false;
+    return true;
+}`,
+    },
+    PopLast: {
+      code: `static T PopLast<T>(List<T> list)
+{
+    T last = list[list.Count - 1];
+    list.RemoveAt(list.Count - 1);
+    return last;
+}`,
+    },
+    CountOf: {
+      code: `static int CountOf<T>(List<T> list, T value)
+{
+    int count = 0;
+    foreach (T x in list) if (Equals(x, value)) count++;
+    return count;
+}`,
+    },
     Turtle: {
       imports: ['System.IO', 'System.Globalization'],
       code: `static class Turtle
@@ -1126,6 +1537,60 @@ static <K, V> LinkedHashMap<K, V> mapOf(Object... pairs) {
     },
   },
   cpp: {
+    sortedCopy: {
+      imports: ['<algorithm>'],
+      code: `template <typename T>
+vector<T> sortedCopy(vector<T> list) {
+    sort(list.begin(), list.end());
+    return list;
+}`,
+    },
+    roundTo: {
+      imports: ['<cmath>'],
+      code: `double roundTo(double x, int digits) {
+    double factor = pow(10, digits);
+    return round(x * factor) / factor;
+}`,
+    },
+    formatFixed: {
+      imports: ['<sstream>', '<iomanip>'],
+      code: `string formatFixed(double x, int digits) {
+    ostringstream out;
+    out << fixed << setprecision(digits) << x;
+    return out.str();
+}`,
+    },
+    countText: {
+      code: `int countText(const string& text, const string& part) {
+    if (part.empty()) return 0;
+    int count = 0;
+    for (size_t i = text.find(part); i != string::npos; i = text.find(part, i + part.size())) count++;
+    return count;
+}`,
+    },
+    isDigits: {
+      code: `bool isDigits(const string& text) {
+    if (text.empty()) return false;
+    for (char c : text) if (c < '0' || c > '9') return false;
+    return true;
+}`,
+    },
+    popLast: {
+      code: `template <typename T>
+T popLast(vector<T>& list) {
+    T last = list.back();
+    list.pop_back();
+    return last;
+}`,
+    },
+    removeValue: {
+      imports: ['<algorithm>'],
+      code: `template <typename T, typename U>
+void removeValue(vector<T>& list, const U& value) {
+    auto it = find(list.begin(), list.end(), value);
+    if (it != list.end()) list.erase(it);
+}`,
+    },
     turtle: {
       imports: ['<cmath>', '<fstream>', '<sstream>'],
       code: `namespace turtle {
@@ -1299,6 +1764,59 @@ int indexOf(const vector<T>& items, const T& value) {
     },
   },
   vba: {
+    SortedCopy: {
+      code: `Function SortedCopy(list As Variant) As Variant
+    Dim copy As Variant
+    copy = list
+    SortList copy
+    SortedCopy = copy
+End Function`,
+    },
+    IsDigits: {
+      code: `Function IsDigits(text As String) As Boolean
+    IsDigits = Len(text) > 0 And Not text Like "*[!0-9]*"
+End Function`,
+    },
+    PopLast: {
+      code: `Function PopLast(list As Variant) As Variant
+    PopLast = list(UBound(list))
+    RemoveAt list, UBound(list)
+End Function`,
+    },
+    RemoveValue: {
+      code: `Sub RemoveValue(list As Variant, value As Variant)
+    Dim i As Long
+    For i = LBound(list) To UBound(list)
+        If list(i) = value Then
+            RemoveAt list, i
+            Exit Sub
+        End If
+    Next i
+End Sub`,
+    },
+    FilledList: {
+      code: `Function FilledList(count As Long, value As Variant) As Variant
+    Dim list() As Variant
+    Dim i As Long
+    If count <= 0 Then
+        FilledList = Array()
+        Exit Function
+    End If
+    ReDim list(count - 1)
+    For i = 0 To count - 1
+        list(i) = value
+    Next i
+    FilledList = list
+End Function`,
+    },
+    ListCount: {
+      code: `Function ListCount(list As Variant, value As Variant) As Long
+    Dim x As Variant
+    For Each x In list
+        If x = value Then ListCount = ListCount + 1
+    Next x
+End Function`,
+    },
     Turtle: {
       code: `Dim turtleX As Double, turtleY As Double, turtleAngle As Double, turtleSize As Double
 Dim turtleUp As Boolean, turtleColor As String, turtleLines As String

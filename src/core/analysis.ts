@@ -379,6 +379,9 @@ export function analyze(program: Program): Analysis {
         if (fn.returns === 'elem') return elemOf(typeOf(e.args[0], place));
         if (fn.returns === 'keys') return listOf(dictParts(typeOf(e.args[0], place))[0]);
         if (fn.returns === 'values') return listOf(dictParts(typeOf(e.args[0], place))[1]);
+        if (fn.returns === 'listOf1') return listOf(typeOf(e.args[1], place));
+        if (fn.returns === 'arg0') return typeOf(e.args[0], place);
+        if (fn.returns === 'value') return unify(dictParts(typeOf(e.args[0], place))[1], typeOf(e.args[2], place));
         return fn.returns;
       }
       case 'cond':

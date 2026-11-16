@@ -34,6 +34,15 @@ export class CppGen extends CLikeGen {
     return `cout << ${items.join(' << ')}${newline ? ' << endl' : ''}`;
   }
 
+  protected libCode(lib: string, fn: string, args: Ex[], get = false): Code {
+    // vector<int>(5, 0): the element type comes from the value
+    if (lib === 'list' && fn === 'filled') {
+      const value: Ex = args[1] ?? { k: 'num', v: 0 };
+      return [`vector<${this.typeName(this.typeOf(value), 'ret')}>(${this.sub(args[0] ?? { k: 'num', v: 0 })}, ${this.sub(value)})`, ATOM];
+    }
+    return super.libCode(lib, fn, args, get);
+  }
+
   protected classHead(c: ClassDef): string {
     return c.base ? `struct ${c.name} : ${c.base}` : `struct ${c.name}`;
   }

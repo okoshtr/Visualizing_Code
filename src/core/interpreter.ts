@@ -629,6 +629,7 @@ class Runner {
       },
       error: (m) => this.err(m),
       sortedKeys: this.lang === 'cpp',
+      lang: this.lang,
     });
   }
 

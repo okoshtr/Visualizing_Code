@@ -5,6 +5,7 @@ import type { ClassDef, Ex, Expr, FunctionDef, ImportInfo, Lang, Program, Stmt, 
 import { CTOR, assignedNames, methodPlace, walkAllExprs, walkStmts } from '../ir';
 import { helperNames } from '../library';
 import { ParseError, type ParseResult, type Token, blankLineBefore, mapTree, caseCondition, endsCase, errorVarToMessage, hasInnerBreak, isIdentChar, isIdentStart, lineOf, markGap, negate, rawStmt, unescape } from './common';
+import { formatDigits } from './idioms';
 import { normalize } from './normalize';
 
 type CLang = Exclude<Lang, 'python' | 'vba'>;
@@ -723,6 +724,66 @@ class CParser {
     return { params, defaults, body, declared };
   }
 
+  /** const quadrat = (x) => x * x;  /  const f = function (x) { … };  (JavaScript): a function. */
+  jsFunctionValue(name: string): boolean {
+    const save = this.p;
+    this.p++; // =
+    if (this.isName('function')) {
+      this.p++;
+      if (this.cur() === 'name') this.p++;
+      if (!this.is('(')) {
+        this.p = save;
+        return false;
+      }
+      const r = this.parseCallable('', name);
+      if (!r) {
+        this.p = save;
+        return false;
+      }
+      this.locals[name] = [...r.declared].filter((n) => !r.params.includes(n));
+      this.functions.push({ name, params: r.params, body: r.body, returns: hasValueReturn(r.body), ...(r.defaults.length ? { defaults: r.defaults } : {}) });
+      return true;
+    }
+    // arrow function: x => …  /  (a, b) => …
+    let params: string[] = [];
+    if (this.cur() === 'name' && this.peek().v === '=>') params = [this.name()];
+    else if (this.is('(')) {
+      let j = this.p + 1;
+      while (this.toks[j]?.t === 'name') {
+        params.push(this.toks[j].v);
+        j++;
+        if (this.toks[j]?.v === ',') j++;
+        else break;
+      }
+      if (this.toks[j]?.v !== ')' || this.toks[j + 1]?.v !== '=>') {
+        this.p = save;
+        return false;
+      }
+      this.p = j + 1;
+    } else {
+      this.p = save;
+      return false;
+    }
+    this.expect('=>');
+    const savedScope = this.scope;
+    const savedDeclared = this.declaredInScope;
+    this.scope = name;
+    this.declaredInScope = new Set(params);
+    this.fnDepth++;
+    let body: Stmt[];
+    try {
+      body = this.is('{') ? this.block() : [{ k: 'return', value: this.assignment() }];
+    } finally {
+      this.fnDepth--;
+    }
+    const declared = this.declaredInScope;
+    this.scope = savedScope;
+    this.declaredInScope = savedDeclared;
+    this.locals[name] = [...declared].filter((n) => !params.includes(n));
+    this.functions.push({ name, params, body, returns: hasValueReturn(body) });
+    return true;
+  }
+
   functionRest(retType: string, name: string) {
     const isMain = (this.lang === 'java' && name === 'main') || (this.lang === 'csharp' && name === 'Main') || (this.lang === 'cpp' && name === 'main');
     const r = this.parseCallable(retType, name, isMain);
@@ -745,6 +806,10 @@ class CParser {
   // ---- user-defined classes ----------------------------------------------------------
 
   inClass = false;
+  /** C++: decimals after "fixed << setprecision(n)" (null: normal output). */
+  streamFixed: number | null = null;
+  /** Java: variables that are a StringBuilder (they become texts). */
+  builders = new Set<string>();
   classes: ClassDef[] = [];
   /** Base class of the class being read (for super / base / Tier::). */
   classBase: string | null = null;
@@ -1162,6 +1227,8 @@ class CParser {
 
   /** Converts an expression statement (assignments, ++, calls). */
   exprStmt(e: Expr, start: number): Stmt {
+    // CultureInfo.CurrentCulture = …: written again by the generator when needed
+    if (e.k === 'pbin' && e.op === '=' && e.a?.k === 'member' && e.a.name === 'CurrentCulture') return { k: 'comment', text: '__drop__' };
     // super(name); in a constructor (Java, JavaScript)
     if (e.k === 'pcall' && e.callee?.k === 'super') return { k: 'superinit', args: e.args };
     if (e.k === 'pbin' && ['=', '+=', '-=', '*=', '/=', '%='].includes(e.op)) {
@@ -1184,7 +1251,6 @@ class CParser {
       return rawStmt(this.srcFrom(start) + ';', this.lang);
     }
     if (this.lang === 'cpp' && e.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'srand') return { k: 'comment', text: '__drop__' };
-    if (e.k === 'pbin' && e.op === '=' && e.a?.k === 'member' && e.a.name === 'CurrentCulture') return { k: 'comment', text: '__drop__' };
     if (e.k === 'punary' && (e.op === '++' || e.op === '--') && e.a?.k === 'var') {
       return { k: 'change', name: e.a.name, by: { k: 'num', v: e.op === '++' ? 1 : -1 } };
     }
@@ -1217,8 +1283,20 @@ class CParser {
       });
     }
     const isEndl = (x: Ex) => (x?.k === 'var' && x.name === 'endl') || (x?.k === 'member' && x.name === 'endl');
+    const isName = (x: Ex, n: string) => (x?.k === 'var' && x.name === n) || (x?.k === 'member' && x.name === n && x.obj?.k === 'var' && x.obj.name === 'std');
+    // cout << fixed << setprecision(2) << preis: numbers with 2 decimals (stays on for later output)
+    const isDoubleish = (x: Ex): boolean => JSON.stringify(x ?? null).includes('"float":true') || [...JSON.stringify(x ?? null).matchAll(/"k":"var","name":"(\w+)"/g)].some((m) => (this.types[`${this.scope}:${m[1]}`] ?? this.types[`:${m[1]}`]) === 'double');
     const out: Stmt[] = [];
     let parts: Ex[] = [];
+    const keep: Ex[] = [];
+    for (const it of items) {
+      if (isName(it, 'fixed')) this.streamFixed = this.streamFixed ?? 6;
+      else if (it?.k === 'pcall' && (isName(it.callee, 'setprecision')) && it.args[0]?.k === 'num' && this.streamFixed !== null) this.streamFixed = it.args[0].v;
+      else if (it?.k === 'pcall' && isName(it.callee, 'setprecision') && it.args[0]?.k === 'num' && items.some((x) => isName(x, 'fixed'))) this.streamFixed = it.args[0].v;
+      else if (it?.k === 'pcall' && isName(it.callee, 'setprecision')) this.fail('setprecision ohne fixed hat noch keinen Block.');
+      else keep.push(this.streamFixed !== null && isDoubleish(it) ? { k: 'lib', lib: 'text', fn: 'fixed', args: [it, { k: 'num', v: this.streamFixed }] } : it);
+    }
+    items.splice(0, items.length, ...keep);
     const flush = (newline: boolean) => {
       if (!parts.length && !newline) return;
       const value: Ex = parts.length === 0 ? { k: 'str', v: '' } : parts.length === 1 ? parts[0] : { k: 'join', parts };
@@ -1271,11 +1349,18 @@ class CParser {
         continue;
       }
       let t = type;
+      // C/C++ arrays: int a[3] = {1, 2, 3}; / int a[5]; / int a[] = {...};
+      let size: Ex | undefined;
       if (this.is('[') && this.peek().v === ']') {
         this.p += 2;
         t += '[]';
+      } else if (this.is('[')) {
+        this.p++;
+        size = this.expr();
+        this.expect(']');
+        if (this.is('[')) this.fail('Mehrdimensionale Arrays haben noch keinen Block.');
+        t += '[]';
       }
-      if (this.is('[')) this.fail('C-Arrays haben noch keinen Block.');
       const scopeKey = isField ? '' : this.scope;
       const hint = this.hintOf(t);
       if (/^(Scanner|Random|BufferedReader|mt19937|random_device|default_random_engine)\b/.test(t.replace(/^(java\.util\.)/, ''))) {
@@ -1283,8 +1368,16 @@ class CParser {
         if (this.eat('=')) this.expr();
         continue;
       }
-      if (hint) this.types[`${scopeKey}:${name}`] = hint;
+      if (/^(java\.lang\.)?StringBuilder$/.test(t) || (this.lang === 'csharp' && /^(System\.Text\.)?StringBuilder$/.test(t))) {
+        this.builders.add(name);
+        this.types[`${scopeKey}:${name}`] = 'string';
+      } else if (hint) this.types[`${scopeKey}:${name}`] = hint;
       if (!isField) this.declaredInScope.add(name);
+      if (this.lang === 'javascript' && this.fnDepth === 0 && this.is('=') && this.jsFunctionValue(name)) continue;
+      if (size && !this.is('=')) {
+        out.push({ k: 'set', name, value: { k: 'pnew', type: t, args: [size] } });
+        continue;
+      }
       if (this.lang === 'cpp' && this.userClasses.has(t) && !this.is('=')) {
         // Hund h("Bello");  /  Hund h;
         const args: Ex[] = [];
@@ -1465,6 +1558,23 @@ class CParser {
     } else {
       this.eatName('final');
       declType = this.parseType();
+    }
+    if (this.is('[') && declType !== null) {
+      // for (auto& [k, v] : m) (C++) / for (const [k, v] of m) (JavaScript): keys and values
+      const s2 = this.p;
+      this.p++;
+      const k = this.cur() === 'name' ? this.name() : '';
+      const v = k && this.eat(',') && this.cur() === 'name' ? this.name() : '';
+      if (k && v && this.eat(']') && (this.eat(':') || this.eatName('of'))) {
+        const dict = this.expr();
+        this.expect(')');
+        this.declaredInScope.add(k);
+        this.declaredInScope.add(v);
+        const body = this.body();
+        const get: Stmt = { k: 'set', name: v, value: { k: 'index', list: dict, index: { k: 'var', name: k } } };
+        return { k: 'foreach', var: k, list: dict, body: [get, ...body] };
+      }
+      this.p = s2;
     }
     if (this.cur() === 'name') {
       const nameTok = this.tok;
@@ -1768,9 +1878,19 @@ class CParser {
     }
     if (t.t === 'tpl') {
       this.p++;
-      const parts: Ex[] = (t.x as { text?: string; expr?: string }[]).map((part) =>
-        part.text !== undefined ? { k: 'str', v: unescape(part.text) } : this.subExpr(part.expr!),
-      );
+      const parts: Ex[] = (t.x as { text?: string; expr?: string }[]).map((part) => {
+        if (part.text !== undefined) return { k: 'str', v: unescape(part.text) };
+        // C#: $"{preis:F2}" / $"{preis:0.00}"
+        if (this.lang === 'csharp') {
+          const cut = formatColon(part.expr!);
+          if (cut >= 0) {
+            const digits = formatDigits(part.expr!.slice(cut + 1).trim(), 'csharp');
+            if (typeof digits !== 'number') this.fail('Diese Formatangabe hat noch keinen Block.');
+            return { k: 'lib', lib: 'text', fn: 'fixed', args: [this.subExpr(part.expr!.slice(0, cut)), { k: 'num', v: digits }] };
+          }
+        }
+        return this.subExpr(part.expr!);
+      });
       return this.mk({ k: 'join', parts }, start);
     }
     if (t.t === 'name') {
@@ -1854,8 +1974,13 @@ class CParser {
             }
             this.expect(')');
           }
-          if (this.is('[')) {
-            this.skipBalanced();
+          // new int[5]: an array with five elements
+          if (this.is('[') && !type.endsWith('[]')) {
+            this.p++;
+            args = [this.expr()];
+            this.expect(']');
+            if (this.is('[')) this.fail('Mehrdimensionale Arrays haben noch keinen Block.');
+            type += '[]';
           }
           if (this.is('{')) {
             const list = this.initList();
@@ -1962,6 +2087,61 @@ function inlineWrappers(stmts: Stmt[]): Stmt[] {
   return out;
 }
 
+/** Position of the ":" that starts a format in $"{preis:F2}" (outside brackets and quotes), or -1. */
+function formatColon(expr: string): number {
+  let depth = 0;
+  let quote = '';
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (quote) {
+      if (c === quote && expr[i - 1] !== '\\') quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    else if (c === ':' && depth === 0 && expr[i + 1] !== ':' && expr[i - 1] !== ':') return i;
+  }
+  return -1;
+}
+
+/** Java/C# StringBuilder: append adds to a text, toString() is the text itself. */
+function builderToText(program: Program, names: Set<string>): Program {
+  if (!names.size) return program;
+  const isB = (e: Ex) => e?.k === 'var' && names.has(e.name);
+  // sb.append(a).append(b) -> [sb, a, b]
+  const appends = (e: Ex): Ex[] | null => {
+    if (e?.k !== 'pcall' || e.callee.k !== 'member' || !/^(append|Append)$/.test(e.callee.name) || e.args.length !== 1) return null;
+    if (isB(e.callee.obj)) return [e.callee.obj, e.args[0]];
+    const inner = appends(e.callee.obj);
+    return inner ? [...inner, e.args[0]] : null;
+  };
+  const visit = (list: Stmt[]): Stmt[] =>
+    list.map((s0) => {
+      const s: any = { ...s0 };
+      for (const key of ['body', 'else', 'handler']) if (Array.isArray(s[key])) s[key] = visit(s[key]);
+      if (s.branches) s.branches = s.branches.map((b: any) => ({ ...b, body: visit(b.body) }));
+      const parts = s.k === 'pexpr' ? appends(s.e) : null;
+      if (parts) return { k: 'set', name: (parts[0] as any).name, value: { k: 'join', parts }, ...(s.gap ? { gap: true } : {}), ...(s.trail ? { trail: s.trail } : {}) };
+      return s;
+    });
+  const mapped: Program = {
+    ...program,
+    main: program.main ? visit(program.main) : null,
+    functions: program.functions.map((f) => ({ ...f, body: visit(f.body) })),
+    classes: program.classes?.map((c) => ({ ...c, ctor: visit(c.ctor), methods: c.methods.map((m) => ({ ...m, body: visit(m.body) })) })),
+  };
+  return mapTree(mapped, (e) => {
+    if (e.k === 'pnew' && /StringBuilder$/.test(e.type)) return e.args.length ? { k: 'convert', to: 'text', a: e.args[0] } : { k: 'str', v: '' };
+    if (e.k === 'pcall' && e.callee.k === 'member' && isB(e.callee.obj) && e.args.length === 0) {
+      if (/^(toString|ToString)$/.test(e.callee.name)) return e.callee.obj as Expr;
+      if (e.callee.name === 'length') return { k: 'len', of: 'text', a: e.callee.obj };
+    }
+    if (e.k === 'member' && isB(e.obj) && e.name === 'Length') return { k: 'len', of: 'text', a: e.obj };
+    return undefined;
+  });
+}
+
 export function parseCLikeExpr(code: string, lang: Lang): Expr {
   const { toks } = tokenizeCLike(code, lang as CLang);
   const p = new CParser(code, lang as CLang, toks, []);
@@ -1985,7 +2165,7 @@ export function parseCLike(src: string, lang: CLang): ParseResult {
   let main: Stmt[];
   if (lang === 'javascript' || lang === 'csharp') main = [...p.globalInits, ...p.topLevel, ...(p.mainBody ?? [])];
   else main = [...p.topLevel, ...p.globalInits, ...(p.mainBody ?? [])];
-  const program: Program = {
+  const program0: Program = {
     main: inlineWrappers(main),
     functions: p.functions.map((f) => ({ ...f, body: inlineWrappers(f.body) })),
     ...(p.classes.length
@@ -1993,5 +2173,6 @@ export function parseCLike(src: string, lang: CLang): ParseResult {
       : {}),
     meta: { types: p.types, locals: p.locals, imports: p.imports, className: p.className },
   };
+  const program = builderToText(program0, p.builders);
   return normalize(program, lang);
 }
