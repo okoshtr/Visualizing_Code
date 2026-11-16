@@ -369,6 +369,11 @@ export class BlockEditor {
     });
   }
 
+  /** Shows a text in a field from which it can be copied. */
+  async showText(message: string, text: string): Promise<void> {
+    await this.dialog(message, { input: text });
+  }
+
   confirm(message: string): Promise<boolean> {
     return this.dialog(message, { cancel: true }).then((v) => v !== null);
   }

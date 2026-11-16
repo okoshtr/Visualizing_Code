@@ -84,6 +84,20 @@ try {
   await page.click('#vc-fold-code');
   assert.equal(await page.isVisible('.vc-cm'), true);
 
+  // share link: copy, open in a fresh browser context
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => window.vcEditor.loadCode('class Hund:\n    def bellen(self):\n        print("Wuff")\n\n\nHund().bellen()\n', 'python'));
+  await page.waitForTimeout(300);
+  await page.click('#vc-act-share');
+  await page.waitForTimeout(400);
+  const link = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(link, /#p=z/);
+  const other = await (await browser.newContext()).newPage();
+  await other.goto(link);
+  await other.waitForTimeout(1200);
+  assert.ok((await other.evaluate(() => window.vcEditor.generatedCode)).includes('class Hund'), 'geteiltes Programm geladen');
+  await other.close();
+
   // every sample file goes through the real Blockly editor without losing anything
   const dir = new URL('../tests/samples/', import.meta.url);
   for (const file of readdirSync(dir)) {

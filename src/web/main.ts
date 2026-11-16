@@ -14,6 +14,7 @@ const ICON = {
   open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
   save: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   code: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-2.5-12-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1m2 3.7a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   theme: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
 };
 
@@ -59,6 +60,48 @@ async function saveFile(name: string, text: string) {
   }
 }
 
+// ---- sharing: the program travels in the link (#p=…, compressed) ----------------------------
+
+const toBase64Url = (bytes: Uint8Array) => {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+const fromBase64Url = (text: string) => {
+  const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+};
+
+async function pipe(bytes: Uint8Array, stream: CompressionStream | DecompressionStream): Promise<Uint8Array> {
+  const out = new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(stream));
+  return new Uint8Array(await out.arrayBuffer());
+}
+
+/** "z" + deflated JSON, or "j" + plain JSON where the browser cannot compress. */
+async function encodeShare(doc: EditorDocument): Promise<string> {
+  const json = new TextEncoder().encode(JSON.stringify(doc));
+  if (typeof CompressionStream === 'undefined') return 'j' + toBase64Url(json);
+  return 'z' + toBase64Url(await pipe(json, new CompressionStream('deflate-raw')));
+}
+
+async function decodeShare(data: string): Promise<EditorDocument> {
+  const bytes = fromBase64Url(data.slice(1));
+  const json = data[0] === 'z' ? await pipe(bytes, new DecompressionStream('deflate-raw')) : bytes;
+  return JSON.parse(new TextDecoder().decode(json)) as EditorDocument;
+}
+
+async function shareLink() {
+  const doc = editor.document();
+  const url = `${location.origin}${location.pathname}#p=${await encodeShare(doc)}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    editor.writeConsole(`Link zum Programm kopiert (${Math.round(url.length / 1024)} KB). Wer ihn öffnet, sieht genau diese Blöcke.\n`, 'info');
+  } catch {
+    // clipboard not allowed: show the link in a dialog to copy by hand
+    await editor.showText('Link zum Programm (zum Kopieren markieren):', url);
+  }
+}
+
 const fileInput = document.createElement('input');
 fileInput.type = 'file';
 fileInput.accept = '.blocks,.json,.txt,' + Object.values(LANG_INFO).flatMap((i) => i.extensions.map((e) => '.' + e)).join(',');
@@ -93,6 +136,8 @@ const editor: BlockEditor = new BlockEditor(document.getElementById('app')!, {
         saveFile(__ARTIFACT__ ? `${name}.txt` : name, editor.generatedCode);
       },
     },
+    // in claude.ai the page runs inside a frame: a link to it cannot carry the program
+    ...(__ARTIFACT__ ? [] : [{ id: 'share', label: 'Teilen', title: 'Link zu diesem Programm kopieren', icon: ICON.share, onClick: () => shareLink() }]),
     { id: 'theme', label: '', title: 'Hell / Dunkel umschalten', icon: ICON.theme, onClick: () => toggleTheme() },
   ],
 });
@@ -147,8 +192,34 @@ document.addEventListener('drop', (e) => {
   }
 });
 
+async function openSharedLink(): Promise<boolean> {
+  const m = /^#p=([\w-]+)$/.exec(location.hash);
+  if (!m) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const doc = await decodeShare(m[1]);
+    if (doc.format !== 'visualizing-code') throw new Error('kein Blöcke-Programm');
+    // the own program (kept in the browser) is only replaced after asking
+    const own = read<EditorDocument>(STORE_KEY);
+    const hasOwn = (own?.blocks?.blocks?.blocks?.length ?? 0) > 1 || (editor.program.main?.length ?? 0) > 0;
+    if (hasOwn && JSON.stringify(own?.blocks) !== JSON.stringify(doc.blocks) && !(await editor.confirm('Geteiltes Programm öffnen? Dein bisheriges Programm wird dabei ersetzt.'))) return false;
+    editor.loadDocument(doc);
+    editor.writeConsole('Geteiltes Programm geladen.\n', 'info');
+    return true;
+  } catch (err) {
+    editor.writeConsole(`Der Link enthält kein lesbares Programm (${(err as Error).message}).\n`, 'err');
+    return false;
+  }
+}
+
+// a shared link pasted into this tab
+if (!__ARTIFACT__) window.addEventListener('hashchange', () => openSharedLink());
+
 const stored = read<EditorDocument>(STORE_KEY);
-if (stored?.format === 'visualizing-code' && stored.blocks?.blocks?.blocks?.length) editor.loadDocument(stored);
+if (!__ARTIFACT__ && /^#p=/.test(location.hash)) {
+  if (stored?.format === 'visualizing-code' && stored.blocks?.blocks?.blocks?.length) editor.loadDocument(stored);
+  openSharedLink();
+} else if (stored?.format === 'visualizing-code' && stored.blocks?.blocks?.blocks?.length) editor.loadDocument(stored);
 else {
   const first = 'hallo';
   import('../core/examples').then(({ EXAMPLES }) => editor.loadProgram(structuredClone(EXAMPLES.find((e) => e.id === first)!.program), false));
