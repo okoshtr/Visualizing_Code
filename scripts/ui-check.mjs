@@ -59,6 +59,25 @@ try {
   assert.match(await page.textContent('.vc-task-result'), /Geschafft/);
   assert.match(await page.textContent('#vc-tasks option'), /1\/\d+/);
 
+  // the console fills the column down to the bottom (also without an exercise card)
+  await page.click('#vc-task-close');
+  const gap = await page.evaluate(() => document.querySelector('.vc-side').getBoundingClientRect().bottom - document.querySelector('.vc-console').getBoundingClientRect().bottom);
+  assert.ok(Math.abs(gap) < 2, `Konsole endet ${gap}px über dem Rand`);
+
+  // step by step with the values of the variables
+  await page.evaluate(() => window.vcEditor.loadCode('x = 1\ny = x + 2\nprint(y)\n', 'python'));
+  await page.waitForTimeout(300);
+  await page.click('#vc-step');
+  await page.waitForTimeout(200);
+  assert.equal((await page.textContent('#vc-run span')).trim(), 'Weiter');
+  await page.click('#vc-step');
+  await page.waitForTimeout(200);
+  assert.match(await page.textContent('.vc-vars'), /x\s*1\s*ganze Zahl/);
+  await page.click('#vc-run');
+  await page.waitForTimeout(400);
+  assert.match(await page.textContent('.vc-vars'), /y\s*3\s*ganze Zahl/);
+  assert.equal((await page.textContent('#vc-run span')).trim(), 'Start');
+
   // folding the code area and expanding it again
   await page.click('#vc-fold-code');
   assert.equal(await page.isVisible('.vc-cm'), false);

@@ -141,3 +141,32 @@ describe('packages: imports, named values and package values', () => {
     expect(generate(program, 'csharp').code).toContain('JsonConvert.SerializeObject(42, formatting: Formatting.Indented)');
   });
 });
+
+describe('variables view (snapshot of the built-in runner)', () => {
+  it('shows main variables, function locals and object properties while stepping', async () => {
+    const { runProgram } = await import('../src/core');
+    const program = parse('class Konto:\n    def __init__(self, inhaber):\n        self.inhaber = inhaber\n        self.stand = 0\n\n    def einzahlen(self, betrag):\n        neu = self.stand + betrag\n        self.stand = neu\n\n\nk = Konto("Ada")\nk.einzahlen(5)\nnamen = ["a", "b"]\n', 'python').program;
+    const seen: string[] = [];
+    let last: any = null;
+    await runProgram(
+      program,
+      {
+        write: () => {},
+        input: async () => '',
+        shouldStop: () => false,
+        step: (_id, inspect) => {
+          const snap = inspect();
+          if (snap.groups[0].title.startsWith('Methode Konto → einzahlen')) seen.push(JSON.stringify(snap.groups));
+        },
+        finished: (inspect) => (last = inspect()),
+      },
+      'python',
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toContain('"name":"betrag","value":"5","type":"ganze Zahl"');
+    expect(seen[seen.length - 1]).toContain('dieses Objekt (Konto)');
+    const main = last.groups.find((g: any) => g.title === 'Hauptprogramm').vars;
+    expect(main).toContainEqual({ name: 'namen', value: "['a', 'b']", type: 'Liste' });
+    expect(main.find((v: any) => v.name === 'k').value).toBe("Konto(inhaber='Ada', stand=5)");
+  });
+});

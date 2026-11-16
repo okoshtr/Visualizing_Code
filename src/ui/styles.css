@@ -319,6 +319,16 @@ body {
   min-height: 0;
   background: var(--panel);
 }
+/* fixed rows: the exercise card may be hidden */
+.vc-task {
+  grid-row: 1;
+}
+.vc-code {
+  grid-row: 2;
+}
+.vc-console {
+  grid-row: 3;
+}
 .vc-code,
 .vc-console {
   display: flex;
@@ -607,14 +617,59 @@ body {
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 4px 8px;
+  letter-spacing: 0.04em;
+  padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
 }
 .vc-tab.is-active {
   color: var(--console-fg);
   background: rgba(255, 255, 255, 0.08);
+}
+.vc-vars {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 16px 12px;
+  font-size: 13px;
+}
+.vc-vars-group h3 {
+  margin: 8px 0 4px;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--console-muted);
+}
+.vc-vars table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.vc-vars th,
+.vc-vars td {
+  text-align: left;
+  vertical-align: top;
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.vc-vars th {
+  font-weight: 800;
+  white-space: nowrap;
+  width: 1%;
+}
+.vc-vars-value {
+  font-family: var(--font-code);
+  word-break: break-word;
+}
+.vc-vars-type {
+  color: var(--console-muted);
+  white-space: nowrap;
+  width: 1%;
+  font-size: 12px;
+}
+.vc-console .vc-head {
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .vc-draw {
   flex: 1;
@@ -694,6 +749,7 @@ body {
 
 /* ---- medium screens: icon-only secondary buttons ---- */
 @media (max-width: 1560px) {
+  .vc-step span,
   .vc-host-actions .vc-btn span {
     position: absolute;
     width: 1px;
@@ -702,6 +758,7 @@ body {
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
+  .vc-step,
   .vc-host-actions .vc-btn {
     padding-inline: 9px;
   }
@@ -709,6 +766,14 @@ body {
 @media (max-width: 1360px) {
   .vc-select select {
     max-width: 120px;
+  }
+  /* logo only (a file name, e.g. in VS Code, stays visible) */
+  .vc-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
 }
 @media (max-width: 1100px) {

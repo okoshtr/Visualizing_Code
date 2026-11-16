@@ -7,7 +7,7 @@ import { EXAMPLES } from '../core/examples';
 import { TASKS, type Task, checkTask } from '../core/tasks';
 import { generate } from '../core/generators';
 import { LANGS, LANG_INFO, type Lang, type Program, type ProgramMeta, walkAllExprs, walkStmts } from '../core/ir';
-import { type Drawing, RunError, runProgram } from '../core/interpreter';
+import { type Drawing, RunError, type VarSnapshot, runProgram } from '../core/interpreter';
 import { isExternalLib } from '../core/library';
 import { parse } from '../core/parsers';
 import { CONNECTION_CHECKER, TOOLBOX, blockLanguage, externalLibs, installAll, keepImportsEnabled, makeTheme, registerExternal, registerFunctionCategory, setBlockLanguage } from './blocks';
@@ -44,6 +44,7 @@ const ICONS = {
   fold: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   bulb: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6m-5 3h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  step: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5.5v13l9-6.5z" fill="currentColor"/><rect x="16.5" y="5.5" width="2.5" height="13" rx="1" fill="currentColor"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
 };
 
@@ -133,6 +134,7 @@ export class BlockEditor {
         </label>
         <span class="vc-host-actions"></span>
         <button type="button" class="vc-btn vc-go" id="vc-run" title="Programm in der Konsole ausführen (F5)">${ICONS.play}<span>Start</span></button>
+        <button type="button" class="vc-btn vc-step" id="vc-step" title="Schritt für Schritt: führt jeweils einen Block aus und zeigt die Variablen (F10)">${ICONS.step}<span>Schritt</span></button>
         <button type="button" class="vc-btn vc-stop" id="vc-stop" title="Programm anhalten" disabled>${ICONS.stop}<span>Stopp</span></button>
       </div>`;
     const main = el('main', { class: 'vc-main' });
@@ -176,14 +178,17 @@ export class BlockEditor {
             <div class="vc-tabs" role="tablist" aria-label="Ausgabe">
               <button type="button" class="vc-tab is-active" role="tab" aria-selected="true" data-tab="out">Konsole</button>
               <button type="button" class="vc-tab" role="tab" aria-selected="false" data-tab="draw">Zeichnung</button>
+              <button type="button" class="vc-tab" role="tab" aria-selected="false" data-tab="vars">Variablen</button>
             </div>
             <div class="vc-head-tools">
+
               <label class="vc-check" title="Führt das Programm langsam aus und zeigt den aktiven Block"><input type="checkbox" id="vc-slow"> Zeitlupe</label>
               <button type="button" class="vc-icon-btn" id="vc-clear" title="Konsole leeren">${ICONS.clear}<span class="vc-sr">Konsole leeren</span></button>
               <button type="button" class="vc-icon-btn vc-fold-btn" id="vc-fold-console" title="Konsole ein- oder ausklappen" aria-expanded="true">${ICONS.fold}<span class="vc-sr">Konsole ein- oder ausklappen</span></button>
             </div>
           </div>
           <div class="vc-out" role="log" aria-live="polite"><span class="vc-hint">Klicke auf „Start“, um dein Programm auszuführen.</span></div>
+          <div class="vc-vars" hidden><p class="vc-hint">Hier siehst du die Werte deiner Variablen. Klicke auf „Schritt“, um das Programm Block für Block auszuführen.</p></div>
           <div class="vc-draw" hidden><canvas class="vc-canvas" aria-label="Zeichnung des Programms"></canvas><p class="vc-draw-hint">Mit den Blöcken der Bibliothek „Zeichnen“ malt dein Programm hier.</p></div>
           <form class="vc-input" hidden>
             <label for="vc-answer" class="vc-ask"></label>
@@ -216,6 +221,8 @@ export class BlockEditor {
       draw: q('.vc-draw'),
       canvas: q('.vc-canvas'),
       drawHint: q('.vc-draw-hint'),
+      vars: q('.vc-vars'),
+      step: q('#vc-step'),
       dialog,
       file: q('.vc-file'),
       tasks: q('.vc-tasks'),
@@ -278,7 +285,8 @@ export class BlockEditor {
       this.drawing = null;
       this.renderDrawing();
     });
-    for (const t of r.querySelectorAll<HTMLButtonElement>('.vc-tab')) t.addEventListener('click', () => this.showTab(t.dataset.tab as 'out' | 'draw'));
+    for (const t of r.querySelectorAll<HTMLButtonElement>('.vc-tab')) t.addEventListener('click', () => this.showTab(t.dataset.tab as 'out' | 'draw' | 'vars'));
+    this.dom.step.addEventListener('click', () => this.stepOnce());
     new ResizeObserver(() => this.renderDrawing()).observe(this.dom.draw);
     this.dom.input.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -294,6 +302,10 @@ export class BlockEditor {
       if (e.key === 'F5') {
         e.preventDefault();
         this.run();
+      }
+      if (e.key === 'F10') {
+        e.preventDefault();
+        this.stepOnce();
       }
     });
     this.installSplitter();
@@ -729,8 +741,64 @@ export class BlockEditor {
     out.scrollTop = out.scrollHeight;
   }
 
+  /** Stepping: the program waits before every block until "Schritt" (or "Weiter") is clicked. */
+  private stepping = false;
+  private stepResolve: (() => void) | null = null;
+
+  /** "Schritt": starts the program paused, or runs the next block. */
+  stepOnce() {
+    if (!this.running) {
+      this.stepping = true;
+      this.showTab('vars');
+      this.run();
+      return;
+    }
+    this.stepping = true;
+    this.showTab('vars');
+    this.releaseStep();
+  }
+
+  private releaseStep() {
+    const r = this.stepResolve;
+    this.stepResolve = null;
+    r?.();
+  }
+
+  /** Brings a block into view if it is outside the visible area. */
+  private revealBlock(id: string) {
+    const block = this.ws.getBlockById(id);
+    if (!block) return;
+    const view = this.ws.getMetricsManager().getViewMetrics(true);
+    const pos = block.getRelativeToSurfaceXY();
+    if (pos.y < view.top || pos.y > view.top + view.height - 40 || pos.x < view.left || pos.x > view.left + view.width - 40) this.ws.centerOnBlock(id);
+  }
+
+  /** Shows the values of the variables. */
+  private renderVars(snap: VarSnapshot) {
+    const box = this.dom.vars;
+    const groups = snap.groups.filter((g) => g.vars.length || g.title === 'Hauptprogramm');
+    box.innerHTML = groups
+      .map(
+        (g) =>
+          `<section class="vc-vars-group"><h3>${escapeHtml(g.title)}</h3>${
+            g.vars.length
+              ? `<table><tbody>${g.vars.map((v) => `<tr><th scope="row">${escapeHtml(v.name)}</th><td class="vc-vars-value">${escapeHtml(v.value)}</td><td class="vc-vars-type">${escapeHtml(v.type)}</td></tr>`).join('')}</tbody></table>`
+              : '<p class="vc-hint">Noch keine Variablen.</p>'
+          }</section>`,
+      )
+      .join('');
+  }
+
   async run() {
-    if (this.running) return;
+    if (this.running) {
+      // "Weiter" while stepping: run on without stopping
+      if (this.stepping) {
+        this.stepping = false;
+        this.setRunUi(true);
+        this.releaseStep();
+      }
+      return;
+    }
     clearTimeout(this.changeTimer);
     this.refresh(false);
     const program = this.lastProgram;
@@ -742,8 +810,8 @@ export class BlockEditor {
     this.drawing = null;
     this.renderDrawing();
     let switched = false;
-    const slow = (this.dom.slow as HTMLInputElement).checked;
     let lastHighlighted: string | null = null;
+    let inspect: (() => VarSnapshot) | null = null;
     try {
       await runProgram(
         program,
@@ -756,15 +824,24 @@ export class BlockEditor {
             (this.dom.answer as HTMLInputElement).focus();
             return new Promise((resolve) => (this.inputResolve = resolve));
           },
-          step: slow
-            ? async (id) => {
-                if (id && id !== lastHighlighted) {
-                  this.ws.highlightBlock(id);
-                  lastHighlighted = id;
-                }
-                await new Promise((r) => setTimeout(r, 350));
-              }
-            : undefined,
+          step: async (id, snap) => {
+            inspect = snap;
+            const slow = (this.dom.slow as HTMLInputElement).checked;
+            if (!slow && !this.stepping) return;
+            if (id && id !== lastHighlighted) {
+              this.ws.highlightBlock(id);
+              lastHighlighted = id;
+              if (this.stepping) this.revealBlock(id);
+            }
+            if (this.stepping || !this.dom.vars.hidden) this.renderVars(snap());
+            if (this.stepping) {
+              this.setRunUi(true);
+              await new Promise<void>((r) => (this.stepResolve = r));
+            } else await new Promise((r) => setTimeout(r, 350));
+          },
+          finished: (snap) => {
+            inspect = snap;
+          },
           shouldStop: () => this.stopRequested,
           draw: (d) => {
             this.drawing = d;
@@ -796,9 +873,12 @@ export class BlockEditor {
       }
     } finally {
       this.running = false;
+      this.stepping = false;
+      this.stepResolve = null;
       this.dom.input.hidden = true;
       this.inputResolve = null;
       this.setRunUi(false);
+      if (inspect) this.renderVars((inspect as () => VarSnapshot)());
       if (lastHighlighted) this.ws.highlightBlock(null);
     }
   }
@@ -808,7 +888,7 @@ export class BlockEditor {
   private drawing: Drawing | null = null;
   private drawPending = false;
 
-  showTab(tab: 'out' | 'draw') {
+  showTab(tab: 'out' | 'draw' | 'vars') {
     for (const t of this.root.querySelectorAll<HTMLButtonElement>('.vc-tab')) {
       const active = t.dataset.tab === tab;
       t.classList.toggle('is-active', active);
@@ -816,6 +896,7 @@ export class BlockEditor {
     }
     this.dom.out.hidden = tab !== 'out';
     this.dom.draw.hidden = tab !== 'draw';
+    this.dom.vars.hidden = tab !== 'vars';
     if (tab === 'draw') this.renderDrawing();
   }
 
@@ -873,6 +954,8 @@ export class BlockEditor {
 
   stop() {
     this.stopRequested = true;
+    this.stepping = false;
+    this.releaseStep();
     const res = this.inputResolve;
     this.inputResolve = null;
     res?.('');
@@ -950,7 +1033,10 @@ export class BlockEditor {
   }
 
   private setRunUi(running: boolean) {
-    (this.dom.run as HTMLButtonElement).disabled = running;
+    const paused = running && this.stepping;
+    // while stepping, "Start" becomes "Weiter" (runs on without stopping)
+    (this.dom.run as HTMLButtonElement).disabled = running && !paused;
+    this.dom.run.querySelector('span')!.textContent = paused ? 'Weiter' : 'Start';
     (this.dom.stop as HTMLButtonElement).disabled = !running;
     this.root.classList.toggle('is-running', running);
   }

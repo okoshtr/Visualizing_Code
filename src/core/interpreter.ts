@@ -1,6 +1,6 @@
 // Runs a program directly (the "green flag"). Works the same for all languages.
 
-import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isList } from './analysis';
+import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isDict, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
 import { CTOR, methodPlace } from './ir';
 import { dictKeys, findLibFn, isExternalLib } from './library';
@@ -9,11 +9,16 @@ export interface RunHost {
   /** Text to show in the console (contains "\n" where a line ends). */
   write(text: string): void;
   input(prompt: string): Promise<string>;
-  /** Called before every statement (used for highlighting / slow motion). */
-  step?(blockId: string | undefined): Promise<void> | void;
+  /**
+   * Called before every statement (used for highlighting, slow motion and stepping).
+   * `inspect` returns the current values of the variables.
+   */
+  step?(blockId: string | undefined, inspect: () => VarSnapshot): Promise<void> | void;
   shouldStop(): boolean;
   /** Files the program can read and write (default: kept in memory while the page is open). */
   files?: Map<string, string>;
+  /** Called when the program has ended (also after an error), with the last values of the variables. */
+  finished?(inspect: () => VarSnapshot): void;
   /** Called whenever the drawing ("Zeichnen" library) changes. */
   draw?(drawing: Drawing): void;
 }
@@ -58,6 +63,22 @@ class Return {
 }
 
 type Frame = { place: string; vars: Map<string, any>; self?: Obj };
+
+/** Values of the variables at one moment (for the "Variablen" view). */
+export interface VarSnapshot {
+  groups: { title: string; vars: { name: string; value: string; type: string }[] }[];
+}
+
+/** Type of a value in words. */
+export function typeLabel(ty: Ty, v: any): string {
+  if (v instanceof Obj) return `Objekt ${v.cls}`;
+  if (v instanceof Map || isDict(ty)) return 'Wörterbuch';
+  if (Array.isArray(v) || isList(ty)) return 'Liste';
+  if (typeof v === 'boolean') return 'Wahrheitswert';
+  if (typeof v === 'string') return 'Text';
+  if (typeof v === 'number') return ty === 'double' || !Number.isInteger(v) ? 'Kommazahl' : 'ganze Zahl';
+  return '';
+}
 
 /** An object of a user-defined class. */
 export class Obj {
@@ -178,6 +199,8 @@ class Runner {
       if (e instanceof Return) return;
       if (e instanceof Break || e instanceof Continue) return;
       throw e;
+    } finally {
+      this.host.finished?.(() => this.snapshot());
     }
   }
 
@@ -268,10 +291,40 @@ class Runner {
     this.scopeFor(name).set(name, value);
   }
 
+  /** Current values of the variables: the running function, the object and the main program. */
+  snapshot(): VarSnapshot {
+    const show = (v: any, ty: Ty) => {
+      const text = formatValue(v, this.lang, ty, true, true);
+      return typeof v === 'string' ? JSON.stringify(v) : text;
+    };
+    const list = (vars: Map<string, any>, place: string) =>
+      [...vars]
+        .filter(([name]) => !name.startsWith('__'))
+        .map(([name, v]) => {
+          const ty = this.a.varType(name, place);
+          return { name, value: show(v, ty), type: typeLabel(ty, v) };
+        });
+    const groups: VarSnapshot['groups'] = [];
+    const f = this.frame;
+    if (f && f.place !== MAIN) {
+      const title = f.self ? `Methode ${f.place.replace('.', ' → ').replace(' → __init__', ' (beim Erzeugen)')}` : `Funktion ${f.place}`;
+      groups.push({ title, vars: list(f.vars, f.place) });
+      if (f.self) {
+        const cls = f.self.cls;
+        groups.push({
+          title: `dieses Objekt (${cls})`,
+          vars: [...f.self.fields].map(([name, v]) => ({ name, value: show(v, this.a.fieldType(cls, name)), type: typeLabel(this.a.fieldType(cls, name), v) })),
+        });
+      }
+    }
+    groups.push({ title: 'Hauptprogramm', vars: list(this.globals, MAIN) });
+    return { groups };
+  }
+
   async tick(id?: string) {
     if (id) this.current = id;
     if (this.host.shouldStop()) throw new Stop();
-    if (this.host.step) await this.host.step(id);
+    if (this.host.step) await this.host.step(id, () => this.snapshot());
     if (++this.steps % 400 === 0) await new Promise((r) => setTimeout(r, 0));
   }
 
