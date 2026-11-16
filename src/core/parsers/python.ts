@@ -671,17 +671,20 @@ class PyParser {
     if (this.nesting > 0) throw new ParseError('Klassen innerhalb von Blöcken haben noch keinen Block.', this.tok.s);
     this.expectKw('class');
     const name = this.name();
+    let baseName: string | undefined;
     if (this.eat('(')) {
       if (!this.is(')')) {
         const base = this.expr();
-        if (!(base?.k === 'var' && base.name === 'object')) throw new ParseError('Vererbung hat noch keinen Block.', this.tok.s);
+        if (base?.k !== 'var') throw new ParseError('Vererbung von Klassen aus Paketen hat noch keinen Block.', this.tok.s);
+        if (base.name !== 'object') baseName = base.name;
+        if (this.is(',')) throw new ParseError('Mehrfachvererbung hat noch keinen Block.', this.tok.s);
       }
       this.expect(')');
     }
     this.expect(':');
     this.expect('', 'nl');
     this.expect('', 'indent');
-    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [] };
+    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [], ...(baseName ? { base: baseName } : {}) };
     let pending: string[] = [];
     while (!this.is('', 'dedent') && this.cur() !== 'eof') {
       if (this.cur() === 'nl') {
@@ -698,7 +701,7 @@ class PyParser {
         const m: any = this.defStmt();
         const { name: mname, params } = JSON.parse(m.id);
         if (params[0] !== 'self') throw new ParseError('Methoden ohne "self" haben noch keinen Block.', this.tok.s);
-        const body = selfToObject(m.body);
+        const body = superCalls(selfToObject(m.body), baseName);
         if (mname === '__init__') {
           cls.ctorParams = params.slice(1);
           cls.ctor = body;
@@ -1117,6 +1120,25 @@ function mergeStrings(parts: Ex[]): Ex[] {
 /** Inside methods, "self" is the object itself. */
 function selfToObject(stmts: Stmt[]): Stmt[] {
   return mapTree(stmts, (e) => (e.k === 'var' && e.name === 'self' ? { k: 'self' } : undefined));
+}
+
+/** super().__init__(…) / Tier.__init__(self, …) -> "Basisklasse erzeugen"; super().m() -> method of the base class. */
+function superCalls(stmts: Stmt[], base: string | undefined): Stmt[] {
+  if (!base) return stmts;
+  const isSuper = (e: Ex) => e?.k === 'pcall' && e.callee.k === 'var' && e.callee.name === 'super' && e.args.length === 0;
+  const visit = (list: Stmt[]): Stmt[] =>
+    list.map((s0) => {
+      const s: any = { ...s0 };
+      for (const key of ['body', 'else', 'handler']) if (Array.isArray(s[key])) s[key] = visit(s[key]);
+      if (s.branches) s.branches = s.branches.map((b: any) => ({ ...b, body: visit(b.body) }));
+      const e = s.k === 'pexpr' ? s.e : null;
+      if (e?.k === 'pcall' && e.callee.k === 'member' && e.callee.name === '__init__' && !e.kwargs) {
+        if (isSuper(e.callee.obj)) return { k: 'superinit', args: e.args, ...(s.gap ? { gap: true } : {}), ...(s.trail ? { trail: s.trail } : {}) };
+        if (e.callee.obj?.k === 'var' && e.callee.obj.name === base && e.args[0]?.k === 'self') return { k: 'superinit', args: e.args.slice(1) };
+      }
+      return s;
+    });
+  return mapTree(visit(stmts), (e) => (isSuper(e) ? { k: 'super' } : undefined));
 }
 
 function mentions(e: Ex, name: string): boolean {

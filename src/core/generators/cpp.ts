@@ -1,5 +1,5 @@
 import { MAIN, type Ty, dictParts, elemOf, isDict, isList } from '../analysis';
-import type { ClassDef, Ex, Expr } from '../ir';
+import type { ClassDef, Ex, Expr, FunctionDef } from '../ir';
 import { ATOM, type Code, type GenResult } from './base';
 import { C, CLikeGen } from './clike';
 
@@ -8,7 +8,11 @@ export class CppGen extends CLikeGen {
   protected readonly indentUnit = '    ';
 
   protected typeName(t: Ty, ctx: 'decl' | 'param' | 'ret' = 'decl'): string {
-    if (t.startsWith('obj<')) return t.slice(4, -1) + (ctx === 'param' ? '&' : '');
+    // objects are shared like in the other languages (and keep their own methods in a list of the base class)
+    if (t.startsWith('obj<')) {
+      this.imports.add('<memory>');
+      return `shared_ptr<${t.slice(4, -1)}>`;
+    }
     if (isList(t)) return `vector<${this.typeName(elemOf(t), 'ret')}>${ctx === 'param' ? '&' : ''}`;
     if (isDict(t)) return `map<${this.typeName(dictParts(t)[0], 'ret')}, ${this.typeName(dictParts(t)[1], 'ret')}>${ctx === 'param' ? '&' : ''}`;
     const basic = { int: 'int', double: 'double', string: 'string', bool: 'bool' }[t];
@@ -31,7 +35,27 @@ export class CppGen extends CLikeGen {
   }
 
   protected classHead(c: ClassDef): string {
-    return `struct ${c.name}`;
+    return c.base ? `struct ${c.name} : ${c.base}` : `struct ${c.name}`;
+  }
+
+  /** The base class's version of a method: Tier::laut(). */
+  protected superPrefix(): string {
+    const cls = this.place.includes('.') ? this.place.slice(0, this.place.indexOf('.')) : '';
+    return `${this.h.base(cls)?.name ?? 'Basis'}::`;
+  }
+
+  /** C++: the base class's constructor is called in the head ": Tier(...)". */
+  protected superInitLine(): string | null {
+    return null;
+  }
+
+  protected ctorHead(c: ClassDef, params: string, superArgs?: Ex[] | null): string {
+    return `${c.name}(${params})${superArgs?.length ? ` : ${c.base}(${this.args(superArgs)})` : ''}`;
+  }
+
+  protected methodHead(c: ClassDef, m: FunctionDef, ret: string, params: string): string {
+    // "virtual": an object of a subclass runs its own version
+    return `${this.h.isOverridden(c.name, m.name) && !this.h.overrides(c.name, m.name) ? 'virtual ' : ''}${ret} ${m.name}(${params})`;
   }
 
   protected classEnd(): string {
@@ -39,7 +63,9 @@ export class CppGen extends CLikeGen {
   }
 
   protected memberPrefix(obj: Ex): string {
-    return obj?.k === 'self' ? 'this->' : super.memberPrefix(obj);
+    if (obj?.k === 'self') return 'this->';
+    if (obj?.k !== 'super' && this.isClassType(obj)) return `${this.sub(obj, ATOM)}->`;
+    return super.memberPrefix(obj);
   }
 
   protected catchDecl(name: string): string {

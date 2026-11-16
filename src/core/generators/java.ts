@@ -147,7 +147,7 @@ export class JavaGen extends CLikeGen {
   }
 
   protected classHead(c: ClassDef): string {
-    return `static class ${c.name}`;
+    return c.base ? `static class ${c.name} extends ${c.base}` : `static class ${c.name}`;
   }
 
   protected floorFn(): string {

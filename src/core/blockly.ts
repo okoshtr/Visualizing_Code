@@ -179,6 +179,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         return { type: 'dict_get', id, inputs: inputs([['DICT', e.dict], ['KEY', e.key, textShadow('')]]) };
       case 'self':
         return { type: 'self_obj', id };
+      case 'super':
+        return { type: 'super_obj', id };
       case 'kwarg':
         return { type: 'kwarg_value', id, fields: { NAME: e.name }, inputs: inputs([['VALUE', e.value, numShadow(0)]]) };
       case 'new':
@@ -226,6 +228,8 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
         return { type: 'dict_set', id, inputs: inputs([['DICT', s.dict], ['KEY', s.key, textShadow('')], ['VALUE', s.value, numShadow(0)]]) };
       case 'fset':
         return { type: 'field_set', id, fields: { NAME: s.name }, inputs: inputs([['OBJ', s.obj], ['VALUE', s.value, numShadow(0)]]) };
+      case 'superinit':
+        return { type: 'super_init', id, extraState: { args: s.args.length }, inputs: argInputs(s.args) };
       case 'for':
         return {
           type: 'controls_for',
@@ -330,7 +334,7 @@ export function toBlockly(program: Program, layout: Layout = {}): WorkspaceState
       members.push(mb);
     }
     for (let i = 0; i < members.length - 1; i++) members[i].next = { block: members[i + 1] };
-    const b: BlockState = { type: 'class_def', id: c.id ?? uid(), fields: { NAME: c.name }, inputs: members.length ? { BODY: { block: members[0] } } : {} };
+    const b: BlockState = { type: 'class_def', id: c.id ?? uid(), fields: { NAME: c.name, BASE: c.base ?? '' }, inputs: members.length ? { BODY: { block: members[0] } } : {} };
     if (c.comment) b.icons = { comment: { text: c.comment, pinned: false, height: 80, width: 220 } };
     return b;
   }
@@ -485,6 +489,8 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return withId({ k: 'dget', dict: e(inp(b, 'DICT')), key: e(inp(b, 'KEY')) });
       case 'self_obj':
         return withId({ k: 'self' });
+      case 'super_obj':
+        return withId({ k: 'super' });
       case 'kwarg_value':
         return withId({ k: 'kwarg', name: String(field(b, 'NAME') ?? 'name'), value: e(inp(b, 'VALUE')) });
       case 'lib_const':
@@ -562,6 +568,8 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
         return { k: 'methodstmt', obj: e(inp(b, 'OBJ')), name: field(b, 'NAME') ?? 'f', args: argList(b, argCount(b)) };
       case 'func_return':
         return { k: 'return', value: e(inp(b, 'VALUE')) };
+      case 'super_init':
+        return { k: 'superinit', args: argList(b, argCount(b)) };
       case 'field_set':
         return { k: 'fset', obj: e(inp(b, 'OBJ')), name: String(field(b, 'NAME') ?? 'wert'), value: e(inp(b, 'VALUE')) };
       case 'code_comment':
@@ -603,6 +611,8 @@ export function fromBlockly(ws: WorkspaceState): FromBlocklyResult {
     if (b.type === 'class_def') {
       if (b.enabled === false) continue;
       const c: ClassDef = { id: b.id, name: String(field(b, 'NAME') ?? 'Klasse'), fields: [], ctorParams: [], ctor: [], methods: [] };
+      const base = String(field(b, 'BASE') ?? '').trim();
+      if (base) c.base = base;
       for (let m = b.inputs?.BODY?.block; m; m = m.next?.block) {
         if (m.enabled === false) continue;
         if (m.type === 'class_field') c.fields.push({ name: String(field(m, 'NAME') ?? 'wert'), value: e(inp(m, 'VALUE')) });

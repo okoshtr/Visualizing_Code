@@ -75,16 +75,21 @@ export class PythonGen extends BaseGen {
   private emitClass(c: ClassDef) {
     this.withId(c.id, () => {
       if (c.comment) this.comment(c.comment);
-      this.emit(`class ${c.name}:`);
+      this.emit(c.base ? `class ${c.name}(${c.base}):` : `class ${c.name}:`);
       this.indented(() => {
         let empty = true;
-        if (c.fields.length || c.ctorParams.length || c.ctor.length) {
+        const plan = this.ctorPlan(c);
+        // a subclass without own constructor and properties simply takes over __init__
+        if (c.fields.length || plan.own || (!c.base && (c.ctorParams.length || c.ctor.length))) {
           empty = false;
           this.place = methodPlace(c.name, CTOR);
-          this.emit(`def __init__(${['self', ...c.ctorParams.map((p) => this.id(p))].join(', ')}):`);
+          this.emit(`def __init__(${['self', ...plan.params.map((p) => this.id(p))].join(', ')}):`);
           this.indented(() => {
+            const before = this.lines.length;
+            if (plan.superArgs) this.emit(`super().__init__(${this.args(plan.superArgs)})`);
             for (const f of c.fields) this.emit(`self.${f.name} = ${this.sub(f.value, 0, { k: 'num', v: 0 })}`);
-            this.suite(c.ctor);
+            this.body(plan.body);
+            if (this.lines.length === before) this.emit('pass');
           });
         }
         for (const m of c.methods) {
@@ -180,6 +185,9 @@ export class PythonGen extends BaseGen {
         break;
       case 'fset':
         this.emit(`${this.sub(s.obj, ATOM)}.${s.name} = ${this.sub(s.value)}`);
+        break;
+      case 'superinit':
+        this.emit(`super().__init__(${this.args(s.args)})`);
         break;
       case 'for':
         this.emit(`for ${this.id(s.var)} in ${this.range(s.from, s.to, s.by)}:`);
@@ -334,6 +342,8 @@ export class PythonGen extends BaseGen {
         return [`${this.sub(e.dict, ATOM)}[${this.sub(e.key)}]`, ATOM];
       case 'self':
         return ['self', ATOM];
+      case 'super':
+        return ['super()', ATOM];
       case 'new':
         return [`${e.cls}(${this.args(e.args)})`, ATOM];
       case 'raw':

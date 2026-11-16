@@ -344,6 +344,8 @@ class CParser {
 
   /** Type hint, including objects of the user's classes. */
   hintOf(t: string): TypeName | null {
+    const ptr = /^(?:std::)?shared_ptr<(\w+)>$/.exec(t.trim());
+    if (ptr && this.userClasses.has(ptr[1])) return `obj<${ptr[1]}>`;
     const base = t.replace(/^(const\s+)?/, '').replace(/[&*]$/, '').trim();
     if (this.userClasses.has(base)) return `obj<${base}>`;
     return typeHint(t);
@@ -414,17 +416,19 @@ class CParser {
   topItem(out: Stmt[]) {
     const pending = this.commentsBefore(this.tok.s);
     const before = this.functions.length;
+    const beforeClasses = this.classes.length;
     const target: Stmt[] = [];
     this.topItemInner(target);
-    this.attachComments(pending, before, out);
+    this.attachComments(pending, before, out, beforeClasses);
     out.push(...target);
   }
 
-  /** Comments directly before a function become the function's comment. */
-  attachComments(pending: Stmt[], before: number, out: Stmt[]) {
-    if (this.functions.length > before && pending.length) {
-      this.functions[before].comment = pending.map((c) => (c as any).text).join('\n');
-    } else out.push(...pending);
+  /** Comments directly before a function (or class) become its comment. */
+  attachComments(pending: Stmt[], before: number, out: Stmt[], beforeClasses = this.classes.length) {
+    const text = pending.map((c) => (c as any).text).join('\n');
+    if (this.functions.length > before && pending.length) this.functions[before].comment = text;
+    else if (this.classes.length > beforeClasses && pending.length) this.classes[beforeClasses].comment = text;
+    else out.push(...pending);
   }
 
   topItemInner(out: Stmt[]) {
@@ -432,7 +436,8 @@ class CParser {
     if (t.t === 'pp') {
       this.p++;
       const inc = /^#include\s*([<"].*[>"])/.exec(t.v);
-      if (inc && !/^<(iostream|string|vector|cmath|cstdlib|ctime|algorithm|random|thread|chrono|sstream|cctype|cstdio|bits\/stdc\+\+\.h)>$/.test(inc[1])) {
+      // headers the generator adds by itself when needed
+      if (inc && !/^<(iostream|string|vector|cmath|cstdlib|ctime|algorithm|random|thread|chrono|sstream|cctype|cstdio|memory|map|fstream|numeric|stdexcept|bits\/stdc\+\+\.h)>$/.test(inc[1])) {
         this.imports.push({ lang: 'cpp', module: inc[1], alias: inc[1] });
       }
       return;
@@ -590,7 +595,10 @@ class CParser {
           return;
         }
         if (this.isName('class') || this.isName('struct')) {
+          const beforeClasses = this.classes.length;
           this.classDecl();
+          if (pending.length && this.classes.length > beforeClasses) this.classes[beforeClasses].comment = pending.map((c) => (c as any).text).join('\n');
+          else this.globalInits.push(...pending);
           return;
         }
         this.fail('Weitere Klassen haben noch keinen Block.');
@@ -668,7 +676,27 @@ class CParser {
       while (this.eat(',')) this.name();
     }
     while (this.isName('const') || this.isName('noexcept') || this.isName('override')) this.p++;
-    if (this.is(':') && this.lang === 'cpp') this.fail('Initialisierungslisten haben noch keinen Block.');
+    const isCtor = this.ctorHeadNext;
+    this.ctorHeadNext = false;
+    const pre: Stmt[] = [];
+    if (this.is(':') && (this.lang === 'cpp' || this.lang === 'csharp')) {
+      if (!isCtor) this.fail('Initialisierungslisten haben noch keinen Block.');
+      this.p++;
+      do {
+        const target = this.name();
+        const close = this.is('{') ? '}' : ')';
+        this.p++;
+        const args: Ex[] = [];
+        while (!this.is(close)) {
+          args.push(this.callArg());
+          if (!this.eat(',')) break;
+        }
+        this.expect(close);
+        if ((this.lang === 'csharp' && target === 'base') || target === this.classBase) pre.push({ k: 'superinit', args });
+        else if (this.lang === 'cpp' && args.length === 1) pre.push({ k: 'fset', obj: { k: 'self' }, name: target, value: args[0] });
+        else this.fail(`"${target}(...)" im Kopf des Konstruktors hat noch keinen Block.`);
+      } while (this.eat(','));
+    }
     if (this.eat(';')) return null; // prototype
     const savedScope = this.scope;
     const savedDeclared = this.declaredInScope;
@@ -685,7 +713,7 @@ class CParser {
     this.fnDepth++;
     let body: Stmt[];
     try {
-      body = this.block();
+      body = [...pre, ...this.block()];
     } finally {
       this.fnDepth--;
     }
@@ -718,6 +746,12 @@ class CParser {
 
   inClass = false;
   classes: ClassDef[] = [];
+  /** Base class of the class being read (for super / base / Tier::). */
+  classBase: string | null = null;
+  classFieldNames = new Map<string, string[]>();
+  classMethodNames = new Map<string, string[]>();
+  /** Reading the head of a constructor (C# ": base(...)", C++ ": Tier(...), x(0)"). */
+  ctorHeadNext = false;
 
   /** Java/C#: is the class starting here the one with the main method? */
   mainClassAhead(): boolean {
@@ -738,11 +772,22 @@ class CParser {
   classDecl(): void {
     this.p++; // class / struct
     const name = this.name();
-    if (this.is(':') || this.isName('extends') || this.isName('implements')) this.fail('Vererbung hat noch keinen Block.');
     if (this.is('<')) this.fail('Generische Klassen haben noch keinen Block.');
+    // inheritance: "extends Tier" (Java, JavaScript), ": Tier" (C#), ": public Tier" (C++)
+    let base: string | undefined;
+    if (this.eatName('extends') || this.eat(':')) {
+      while (this.isName('public') || this.isName('protected') || this.isName('private') || this.isName('virtual')) this.p++;
+      base = this.name();
+      if (this.is('.') || this.is('::') || this.is('<')) this.fail('Vererbung von Klassen aus Paketen hat noch keinen Block.');
+      if (this.lang === 'csharp' && !this.userClasses.has(base)) this.fail('Schnittstellen und Klassen aus Paketen haben noch keinen Block.');
+    }
+    if (this.isName('implements') || this.is(',')) this.fail('Schnittstellen und Mehrfachvererbung haben noch keinen Block.');
     this.expect('{');
-    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [] };
-    const fieldNames: string[] = [];
+    const cls: ClassDef = { name, fields: [], ctorParams: [], ctor: [], methods: [], ...(base ? { base } : {}) };
+    // properties of base classes can be used without "this." as well
+    const fieldNames: string[] = [...(base ? (this.classFieldNames.get(base) ?? []) : [])];
+    const savedBase = this.classBase;
+    this.classBase = base ?? null;
     const methodLocals = new Map<string, Set<string>>();
     const saved = this.inClass;
     this.inClass = true;
@@ -759,6 +804,7 @@ class CParser {
         // constructor
         if ((this.tok.v === name || (this.lang === 'javascript' && this.tok.v === 'constructor')) && this.peek().v === '(') {
           this.p++;
+          this.ctorHeadNext = true;
           const place = methodPlace(name, CTOR);
           const r = this.parseCallable('void', place);
           if (r && (r.params.length || r.body.length)) {
@@ -821,13 +867,24 @@ class CParser {
       this.eat(';');
     } finally {
       this.inClass = saved;
+      this.classBase = savedBase;
     }
+    this.classFieldNames.set(name, fieldNames);
     // properties used without "this." inside the methods
     const fix = (stmts: Stmt[], place: string, params: string[]) => {
       const local = methodLocals.get(place) ?? new Set();
       const isField = (n: string) => fieldNames.includes(n) && !params.includes(n) && !local.has(n);
       const self: Expr = { k: 'self' };
-      const mapped = mapTree(stmts, (e) => (e.k === 'var' && isField(e.name) ? { k: 'member', obj: self, name: e.name } : undefined));
+      // laut() inside a method means this.laut()
+      const isMethod = (n: string) => methodNames.includes(n) && !params.includes(n) && !local.has(n);
+      const map = (e: Expr): Expr | undefined => {
+        if (e.k === 'var' && isField(e.name)) return { k: 'member', obj: self, name: e.name };
+        if (e.k === 'pcall' && e.callee?.k === 'var' && isMethod(e.callee.name)) {
+          return { ...e, callee: { k: 'member', obj: self, name: e.callee.name }, args: e.args.map((a) => mapTree(a, map)) };
+        }
+        return undefined;
+      };
+      const mapped = mapTree(stmts, map);
       const visit = (list: Stmt[]): Stmt[] =>
         list.map((s0) => {
           let s: any = { ...s0 };
@@ -839,6 +896,8 @@ class CParser {
         });
       return visit(mapped);
     };
+    const methodNames = [...cls.methods.map((m) => m.name), ...(base ? (this.classMethodNames.get(base) ?? []) : [])];
+    this.classMethodNames.set(name, methodNames);
     cls.ctor = fix(cls.ctor, methodPlace(name, CTOR), cls.ctorParams);
     cls.methods = cls.methods.map((m) => ({ ...m, body: fix(m.body, methodPlace(name, m.name), m.params) }));
     // "this.x = ..." in the constructor of a property without start value is fine as it is
@@ -1103,6 +1162,8 @@ class CParser {
 
   /** Converts an expression statement (assignments, ++, calls). */
   exprStmt(e: Expr, start: number): Stmt {
+    // super(name); in a constructor (Java, JavaScript)
+    if (e.k === 'pcall' && e.callee?.k === 'super') return { k: 'superinit', args: e.args };
     if (e.k === 'pbin' && ['=', '+=', '-=', '*=', '/=', '%='].includes(e.op)) {
       const target = e.a;
       const value = e.b;
@@ -1656,6 +1717,8 @@ class CParser {
   postfix(): Ex {
     const start = this.p;
     let e = this.primary();
+    // C++: Tier::laut() inside a subclass of Tier is the base class's version
+    if (this.lang === 'cpp' && this.inClass && e?.k === 'var' && e.name === this.classBase && this.is('::')) e = { k: 'super' };
     while (true) {
       if (this.is('.') || this.is('::') || this.is('->')) {
         this.p++;
@@ -1716,6 +1779,43 @@ class CParser {
         case 'false':
           this.p++;
           return { k: 'bool', v: t.v === 'true' };
+        case 'std':
+        case 'make_shared':
+        case 'shared_ptr': {
+          if (this.lang !== 'cpp') break;
+          const save = this.p;
+          if (t.v === 'std') {
+            if (this.peek().v !== '::') break;
+            this.p += 2;
+          }
+          const fn = this.tok.v;
+          if ((fn === 'make_shared' || fn === 'shared_ptr') && this.peek().v === '<') {
+            this.p++;
+            const type = this.typeArgs();
+            if (type !== null && this.is('(')) {
+              this.p++;
+              // shared_ptr<Hund>(this, [](Hund*) {}): "dieses Objekt"
+              if (fn === 'shared_ptr' && this.isName('this') && this.inClass) {
+                let depth = 1;
+                while (depth > 0 && this.cur() !== 'eof') {
+                  if (this.is('(')) depth++;
+                  if (this.is(')')) depth--;
+                  this.p++;
+                }
+                return { k: 'self' };
+              }
+              const args: Ex[] = [];
+              while (!this.is(')')) {
+                args.push(this.callArg());
+                if (!this.eat(',')) break;
+              }
+              this.expect(')');
+              return this.mk({ k: 'pnew', type, args }, start);
+            }
+          }
+          this.p = save;
+          break;
+        }
         case 'this':
           if (this.inClass) {
             this.p++;
@@ -1723,11 +1823,17 @@ class CParser {
           }
           this.fail('"this" außerhalb einer Klasse hat noch keinen Block.');
           break;
+        case 'super':
+        case 'base':
+          if (this.inClass && this.classBase && (t.v === 'super') === (this.lang !== 'csharp')) {
+            this.p++;
+            return { k: 'super' };
+          }
+          this.fail(`"${t.v}" hat noch keinen Block.`);
+          break;
         case 'null':
         case 'nullptr':
         case 'undefined':
-        case 'super':
-        case 'base':
           this.fail(`"${t.v}" hat noch keinen Block.`);
           break;
         case 'new': {

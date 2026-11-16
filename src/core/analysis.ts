@@ -1,5 +1,6 @@
 // Scope analysis and type inference shared by the code generators and the runner.
 
+import { Hierarchy } from './classes';
 import {
   CTOR,
   childBodies,
@@ -43,10 +44,19 @@ export function dictParts(t: Ty): [Ty, Ty] {
   return ['?', '?'];
 }
 
+/** Classes of the program being analyzed (objects of Hund and Katze unify to Tier). */
+let activeHierarchy: Hierarchy | null = null;
+
 export function unify(a: Ty, b: Ty): Ty {
   if (a === b) return a;
   if (a === '?') return b;
   if (b === '?') return a;
+  const ca = classOf(a);
+  const cb = classOf(b);
+  if (ca && cb) {
+    const common = activeHierarchy?.commonBase(ca, cb);
+    return common ? `obj<${common}>` : 'any';
+  }
   if (isNumeric(a) && isNumeric(b)) return 'double';
   if (isList(a) && isList(b)) return listOf(unify(elemOf(a), elemOf(b)));
   if (isDict(a) && isDict(b)) {
@@ -167,6 +177,8 @@ export function analyze(program: Program): Analysis {
   const fnByName = new Map(program.functions.map((f) => [f.name, f]));
   // methods and constructors are places named "Klasse.methode"
   const classes = new Map((program.classes ?? []).map((c) => [c.name, c]));
+  const h = Hierarchy.of(program);
+  activeHierarchy = h;
   for (const c of program.classes ?? []) {
     const ctor: FunctionDef = { name: methodPlace(c.name, CTOR), params: c.ctorParams, body: c.ctor, returns: false };
     placeList.push({ name: ctor.name, def: ctor, body: c.ctor, params: c.ctorParams });
@@ -243,8 +255,9 @@ export function analyze(program: Program): Analysis {
   const retTypes = new Map<string, Ty>();
   const fieldTypes = new Map<string, Map<string, Ty>>();
   let changed = false;
-  const assignField = (cls: string, name: string, t: Ty) => {
-    if (hints[`${cls}#${name}`]) return;
+  const assignField = (cls0: string, name: string, t: Ty) => {
+    const cls = h.fieldOwner(cls0, name);
+    if (hints[`${cls}#${name}`] || hints[`${cls0}#${name}`]) return;
     if (!fieldTypes.has(cls)) fieldTypes.set(cls, new Map());
     const m = fieldTypes.get(cls)!;
     const old = m.get(name) ?? '?';
@@ -254,7 +267,18 @@ export function analyze(program: Program): Analysis {
       changed = true;
     }
   };
-  const fieldType = (cls: string, name: string): Ty => hints[`${cls}#${name}`] ?? fieldTypes.get(cls)?.get(name) ?? '?';
+  const fieldType = (cls0: string, name: string): Ty => {
+    const cls = h.fieldOwner(cls0, name);
+    return hints[`${cls}#${name}`] ?? hints[`${cls0}#${name}`] ?? fieldTypes.get(cls)?.get(name) ?? '?';
+  };
+  /** Places of a method in a class, its base classes and subclasses (they share parameter and result types). */
+  const methodFamily = (cls: string, name: string): string[] => {
+    const owner = h.methodOwner(cls, name);
+    if (!owner) return [];
+    let top = owner;
+    for (const c of h.chain(owner.name)) if (c.methods.some((m) => m.name === name)) top = c;
+    return [top, ...h.subclasses(top.name)].filter((c) => c.methods.some((m) => m.name === name)).map((c) => methodPlace(c.name, name));
+  };
   /** Parameters of a method / constructor get the types of the arguments. */
   const assignArgs = (place: string, args: Ex[], from: string) => {
     const f = fnByName.get(place);
@@ -376,6 +400,11 @@ export function analyze(program: Program): Analysis {
         const cls = place.includes('.') ? place.slice(0, place.indexOf('.')) : '';
         return cls ? `obj<${cls}>` : 'any';
       }
+      case 'super': {
+        const cls = place.includes('.') ? place.slice(0, place.indexOf('.')) : '';
+        const base = cls ? h.base(cls) : undefined;
+        return base ? `obj<${base.name}>` : 'any';
+      }
       case 'new':
         return `obj<${e.cls}>`;
       case 'member': {
@@ -384,7 +413,8 @@ export function analyze(program: Program): Analysis {
       }
       case 'method': {
         const cls = classOf(typeOf(e.obj, place));
-        return cls && classes.get(cls)?.methods.some((m) => m.name === e.name) ? (retTypes.get(methodPlace(cls, e.name)) ?? '?') : 'any';
+        const owner = cls ? h.methodOwner(cls, e.name) : undefined;
+        return owner ? (retTypes.get(methodPlace(owner.name, e.name)) ?? '?') : 'any';
       }
       default:
         return 'any';
@@ -428,11 +458,11 @@ export function analyze(program: Program): Analysis {
           break;
         }
         case 'new':
-          assignArgs(methodPlace(x.cls, CTOR), x.args, place);
+          assignArgs(methodPlace(h.ctorOwner(x.cls)?.name ?? x.cls, CTOR), x.args, place);
           break;
         case 'method': {
           const cls = classOf(typeOf(x.obj, place));
-          if (cls) assignArgs(methodPlace(cls, x.name), x.args, place);
+          if (cls) for (const m of methodFamily(cls, x.name)) assignArgs(m, x.args, place);
           break;
         }
         case 'lib': {
@@ -492,7 +522,13 @@ export function analyze(program: Program): Analysis {
           }
           case 'methodstmt': {
             const cls = classOf(typeOf(s.obj, p.name));
-            if (cls) assignArgs(methodPlace(cls, s.name), s.args, p.name);
+            if (cls) for (const m of methodFamily(cls, s.name)) assignArgs(m, s.args, p.name);
+            break;
+          }
+          case 'superinit': {
+            const cls = p.name.includes('.') ? p.name.slice(0, p.name.indexOf('.')) : '';
+            const base = cls ? h.base(cls) : undefined;
+            if (base) assignArgs(methodPlace(h.ctorOwner(base.name)?.name ?? base.name, CTOR), s.args, p.name);
             break;
           }
           case 'callstmt': {
@@ -522,6 +558,32 @@ export function analyze(program: Program): Analysis {
             break;
         }
       });
+    }
+    // a redefined method has the same parameter and result types as in the base class
+    for (const c of program.classes ?? []) {
+      for (const m of c.methods) {
+        const family = methodFamily(c.name, m.name);
+        if (family.length < 2) continue;
+        let ret: Ty = '?';
+        for (const pl of family) ret = unify(ret, retTypes.get(pl) ?? '?');
+        for (const pl of family) {
+          if (ret !== '?' && retTypes.get(pl) !== ret) {
+            retTypes.set(pl, ret);
+            changed = true;
+          }
+        }
+        m.params.forEach((_, i) => {
+          let t: Ty = '?';
+          for (const pl of family) {
+            const f = fnByName.get(pl);
+            if (f?.params[i] !== undefined) t = unify(t, rawVarType(f.params[i], pl));
+          }
+          for (const pl of family) {
+            const f = fnByName.get(pl);
+            if (f?.params[i] !== undefined && t !== '?') assign(f.params[i], pl, t);
+          }
+        });
+      }
     }
     if (!changed) break;
   }

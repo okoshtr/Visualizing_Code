@@ -147,12 +147,18 @@ describe('new constructs run the same with the real toolchains', () => {
 
 describe('hand-written classes run in every language', () => {
   const HUNDE = 'Bello ist 2 Jahre alt\nLuna ist 0 Jahre alt\nBello ist älter';
+  const TIERE = 'Etwas sagt ...\nBello sagt Wuff\nTweety sagt Piep\nTweety fliegt davon\nBeine zusammen: 10';
   const dir = join(__dirname, 'samples');
-  for (const file of ['klassen.py', 'Klassen.java', 'Tiere.cs', 'klassen.cpp', 'klassen.js']) {
+  const files: [string, string][] = [
+    ...['klassen.py', 'Klassen.java', 'Tiere.cs', 'klassen.cpp', 'klassen.js'].map((f): [string, string] => [f, HUNDE]),
+    // inheritance: every animal says its own sound, also in a list of the base class
+    ...['vererbung.py', 'Vererbung.java', 'Vererbung.cs', 'vererbung.cpp', 'vererbung.js'].map((f): [string, string] => [f, TIERE]),
+  ];
+  for (const [file, expected] of files) {
     const program = parse(readFileSync(join(dir, file), 'utf8'), langFromFileName(file)!).program;
     for (const [lang, runner] of Object.entries(RUNNERS) as [Lang, NonNullable<(typeof RUNNERS)[Lang]>][]) {
       it.skipIf(!runner.available)(`${file} -> ${lang}`, () => {
-        expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(HUNDE);
+        expect(normalize(runner.run(generate(program, lang).code, ''))).toBe(expected);
       });
     }
   }

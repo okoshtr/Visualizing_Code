@@ -23,12 +23,27 @@ export class CSharpGen extends CLikeGen {
     return `public ${super.fieldDecl(t, name, value)}`;
   }
 
-  protected ctorHead(c: ClassDef, params: string): string {
-    return `public ${c.name}(${params})`;
+  protected classHead(c: ClassDef): string {
+    return c.base ? `class ${c.name} : ${c.base}` : `class ${c.name}`;
   }
 
-  protected methodHead(_c: ClassDef, m: FunctionDef, ret: string, params: string): string {
-    return `public ${ret} ${m.name}(${params})`;
+  protected superPrefix(): string {
+    return 'base.';
+  }
+
+  /** C#: the base class's constructor is called in the head ": base(...)". */
+  protected superInitLine(): string | null {
+    return null;
+  }
+
+  protected ctorHead(c: ClassDef, params: string, superArgs?: Ex[] | null): string {
+    return `public ${c.name}(${params})${superArgs?.length ? ` : base(${this.args(superArgs)})` : ''}`;
+  }
+
+  protected methodHead(c: ClassDef, m: FunctionDef, ret: string, params: string): string {
+    // a method that subclasses redefine is "virtual", the redefinition "override"
+    const kind = this.h.overrides(c.name, m.name) ? 'override ' : this.h.isOverridden(c.name, m.name) ? 'virtual ' : '';
+    return `public ${kind}${ret} ${m.name}(${params})`;
   }
 
   protected catchDecl(name: string): string {

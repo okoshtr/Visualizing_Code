@@ -640,12 +640,16 @@ function installClassBlocks() {
   Blockly.common.defineBlocksWithJsonArray([
     {
       type: 'class_def',
-      message0: 'Klasse %1',
-      args0: [{ type: 'field_input', name: 'NAME', text: 'Konto' }],
+      message0: 'Klasse %1 erbt von %2',
+      args0: [
+        { type: 'field_input', name: 'NAME', text: 'Konto' },
+        { type: 'field_input', name: 'BASE', text: '' },
+      ],
       message1: '%1',
       args1: [{ type: 'input_statement', name: 'BODY', check: 'ClassMember' }],
       style: 'class_hat_blocks',
-      tooltip: 'Eine Klasse ist ein Bauplan für Objekte: Sie hat Eigenschaften (Daten) und Methoden (was das Objekt kann).',
+      tooltip:
+        'Eine Klasse ist ein Bauplan für Objekte: Sie hat Eigenschaften (Daten) und Methoden (was das Objekt kann). Bei „erbt von“ kannst du eine andere Klasse eintragen: Dann übernimmt diese Klasse deren Eigenschaften und Methoden (leer lassen, wenn sie von keiner erbt).',
     },
     {
       type: 'class_field',
@@ -684,6 +688,13 @@ function installClassBlocks() {
       nextStatement: 'ClassMember',
       style: 'class_blocks',
       tooltip: 'Etwas, das jedes Objekt der Klasse kann. Mit "gib zurück" liefert die Methode einen Wert.',
+    },
+    {
+      type: 'super_obj',
+      message0: 'Basisklasse',
+      output: null,
+      style: 'class_blocks',
+      tooltip: 'Steck das in „rufe von … die Methode … auf“, um die Version der Methode aus der Basisklasse aufzurufen (super / base).',
     },
     {
       type: 'self_obj',
@@ -728,6 +739,56 @@ function installClassBlocks() {
     }
   };
   for (const type of [...CLASS_MEMBERS, 'self_obj']) Blockly.Blocks[type].onchange = onchange;
+  // "Basisklasse" only makes sense inside a class that inherits from another one
+  const inSubclass = (b: Blockly.Block): boolean => {
+    let p: Blockly.Block | null = b;
+    while ((p = p.getSurroundParent())) if (p.type === 'class_def') return !!String(p.getFieldValue('BASE') ?? '').trim();
+    return false;
+  };
+  Blockly.Blocks['super_obj'].onchange = function (this: Blockly.BlockSvg) {
+    if (!this.workspace || this.workspace.isFlyout) return;
+    this.setWarningText(inSubclass(this) ? null : '„Basisklasse“ gibt es nur in einer Klasse, die von einer anderen erbt.');
+  };
+
+  // Basisklasse erzeugen mit (Werte ...)
+  Blockly.Blocks['super_init'] = {
+    argCount_: 0,
+    init(this: any) {
+      this.argCount_ = 0;
+      const head = this.appendDummyInput('HEAD').appendField('Basisklasse erzeugen');
+      addArgButtons(this, head);
+      this.setInputsInline(true);
+      this.setPreviousStatement(true);
+      this.setNextStatement(true);
+      this.setStyle('class_blocks');
+      this.setTooltip('Gehört an den Anfang von „beim Erzeugen“ einer Klasse, die erbt: Die Basisklasse richtet ihren Teil des Objekts mit diesen Werten ein (super(...) / base(...)).');
+    },
+    onchange(this: any) {
+      if (!this.workspace || this.workspace.isFlyout) return;
+      let p: Blockly.Block | null = this.getSurroundParent();
+      while (p && p.type !== 'class_ctor') p = p.getSurroundParent();
+      this.setWarningText(p && inSubclass(this) ? null : 'Dieser Block gehört in „beim Erzeugen“ einer Klasse, die von einer anderen erbt.');
+    },
+    updateArgs_(this: any) {
+      rebuildArgs(this, this.argCount_, (i: number) => (i === 0 ? 'mit' : ''), () => null);
+    },
+    saveExtraState(this: any) {
+      return { args: this.argCount_ };
+    },
+    loadExtraState(this: any, s: any) {
+      this.argCount_ = s?.args ?? 0;
+      this.updateArgs_();
+    },
+    mutationToDom(this: any) {
+      const m = Blockly.utils.xml.createElement('mutation');
+      m.setAttribute('args', String(this.argCount_));
+      return m;
+    },
+    domToMutation(this: any, m: Element) {
+      this.argCount_ = Number(m.getAttribute('args') ?? 0);
+      this.updateArgs_();
+    },
+  };
 
   // neues Objekt <Klasse> mit (Werte ...)
   Blockly.Blocks['obj_new'] = {
@@ -770,14 +831,15 @@ const CALL_TYPES = new Set(['lib_expr', 'lib_stmt', 'method_expr', 'method_stmt'
 
 function installPackageBlocks() {
   const langField = () => new Blockly.FieldDropdown(LANG_OPTIONS);
-  const moduleValidator = (v: string) => (/^[\p{L}_@][\p{L}\p{N}_.\-/@:]*$/u.test(v.trim()) ? v.trim() : null);
+  // package names: numpy, matplotlib.pyplot, @scope/name, <set> or "eigene.h" (C++), Newtonsoft.Json (C#)
+  const moduleValidator = (v: string) => (/^\S+$/u.test(v.trim()) ? v.trim() : null);
   Blockly.Blocks['import_module'] = {
     init(this: Blockly.Block) {
       this.appendDummyInput()
         .appendField('importiere Paket')
         .appendField(new Blockly.FieldTextInput('pulp', moduleValidator), 'MODULE')
         .appendField('als')
-        .appendField(new Blockly.FieldTextInput('pulp', (v: string) => (/^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(v.trim()) ? v.trim() : null)), 'ALIAS')
+        .appendField(new Blockly.FieldTextInput('pulp', moduleValidator), 'ALIAS')
         .appendField('für')
         .appendField(langField(), 'LANG');
       this.setPreviousStatement(true, 'Import');
@@ -1342,6 +1404,10 @@ export const TOOLBOX = {
         { kind: 'block', type: 'class_method', fields: { NAME: 'methode', PARAMS: '' } },
         { kind: 'block', type: 'self_obj' },
         { kind: 'block', type: 'member_get', fields: { NAME: 'name' }, inputs: { OBJ: { block: { type: 'self_obj' } } } },
+        { kind: 'label', text: 'Vererbung: trage bei „erbt von“ die Basisklasse ein' },
+        { kind: 'block', type: 'class_def', fields: { NAME: 'Dackel', BASE: 'Hund' } },
+        { kind: 'block', type: 'super_init', extraState: { args: 1 } },
+        { kind: 'block', type: 'method_stmt', fields: { NAME: 'bellen' }, inputs: { OBJ: { block: { type: 'super_obj' } } } },
         { kind: 'block', type: 'field_set', fields: { NAME: 'alter' }, inputs: { OBJ: { block: { type: 'self_obj' } }, VALUE: num(1) } },
         { kind: 'block', type: 'obj_new', fields: { CLASS: 'Hund' } },
         { kind: 'block', type: 'method_stmt', fields: { NAME: 'bellen' } },

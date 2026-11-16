@@ -1,6 +1,7 @@
 // Example programs (shown in the "Beispiele" menu and used by the tests).
 
 import type { Ex, Expr, Program, Stmt } from './ir';
+import { parse } from './parsers';
 
 const n = (v: number): Expr => ({ k: 'num', v });
 const s = (v: string): Expr => ({ k: 'str', v });
@@ -208,6 +209,48 @@ export const EXAMPLES: Example[] = [
         print(join(s('Stand: '), { k: 'member', obj: v('konto'), name: 'kontostand' })),
       ],
     },
+  },
+  {
+    id: 'tiere',
+    title: 'Tiere (Vererbung)',
+    description: 'Unterklassen übernehmen Eigenschaften und Methoden und ändern einzelne davon',
+    program: parse(
+      `class Tier:
+    def __init__(self, name):
+        self.name = name
+
+    def laut(self):
+        return "..."
+
+    def vorstellen(self):
+        print(self.name + " sagt " + self.laut())
+
+
+class Hund(Tier):
+    def laut(self):
+        return "Wuff"
+
+
+class Vogel(Tier):
+    def __init__(self, name, farbe):
+        super().__init__(name)
+        self.farbe = farbe
+
+    def laut(self):
+        return "Piep"
+
+    def vorstellen(self):
+        super().vorstellen()
+        print(self.name + " ist " + self.farbe)
+
+
+bello = Hund("Bello")
+tweety = Vogel("Tweety", "gelb")
+bello.vorstellen()
+tweety.vorstellen()
+`,
+      'python',
+    ).program,
   },
   {
     id: 'zahlenraten',

@@ -1122,10 +1122,74 @@ export function parseVba(src: string): ParseResult {
   const program: Program = {
     main,
     functions,
-    ...(classes.length ? { classes } : {}),
+    ...(classes.length ? { classes: recoverInheritance(classes) } : {}),
     meta: { types: p.types, locals, mainName: mainProc && mainProc.name.toLowerCase() !== 'main' ? mainProc.name : undefined },
   };
   return normalize(program, 'vba');
+}
+
+/**
+ * VBA has no inheritance; the generator copies base class code into subclasses:
+ * NeuHund starts with "Hund_Tier_Init self, …", inherited methods are copies, and
+ * "Hund_Tier_laut self" is the base class's version. This finds the inheritance again.
+ */
+function recoverInheritance(classes: ClassDef[]): ClassDef[] {
+  const byLower = new Map(classes.map((c) => [c.name.toLowerCase(), c]));
+  const calledProc = (s: Stmt | undefined): { name: string; args: Ex[] } | null => {
+    const e = s?.k === 'pexpr' ? s.e : null;
+    if (e?.k !== 'pcall' || e.callee.k !== 'var' || e.args[0]?.k !== 'self') return null;
+    return { name: e.callee.name, args: e.args.slice(1) };
+  };
+  // base classes: NeuHund begins with Hund_Tier_Init
+  for (const c of classes) {
+    const call = calledProc(c.ctor.find((s) => s.k !== 'comment'));
+    const m = call && new RegExp(`^${c.name}_(\\w+)_Init$`, 'i').exec(call.name);
+    const base = m ? byLower.get(m[1].toLowerCase()) : undefined;
+    if (!call || !base || base === c) continue;
+    c.base = base.name;
+    const i = c.ctor.findIndex((s) => s.k !== 'comment');
+    c.ctor = [...c.ctor.slice(0, i), { k: 'superinit', args: call.args }, ...c.ctor.slice(i + 1)];
+  }
+  const chain = (c: ClassDef): ClassDef[] => {
+    const out: ClassDef[] = [];
+    for (let x: ClassDef | undefined = c; x && !out.includes(x); x = x.base ? byLower.get(x.base.toLowerCase()) : undefined) out.push(x);
+    return out;
+  };
+  const same = (a: unknown, b: unknown) => JSON.stringify(a, (k, v) => (k === 'src' || k === 'id' ? undefined : v)) === JSON.stringify(b, (k, v) => (k === 'src' || k === 'id' ? undefined : v));
+  for (const c of classes) {
+    if (!c.base) continue;
+    const bases = chain(c).slice(1);
+    const baseNames = bases.map((b) => b.name.toLowerCase());
+    // copies of base class code ("Tier_Init", "Tier_laut") and unchanged inherited methods
+    c.methods = c.methods.filter((m) => {
+      const i = m.name.indexOf('_');
+      if (i > 0 && baseNames.includes(m.name.slice(0, i).toLowerCase())) return false;
+      const inherited = bases.map((b) => b.methods.find((x) => x.name.toLowerCase() === m.name.toLowerCase())).find(Boolean);
+      return !(inherited && same(inherited.body, m.body) && same(inherited.params, m.params));
+    });
+    // "Hund_Tier_laut self, …" -> the base class's version of laut
+    const toSuper = (list: Stmt[]): Stmt[] =>
+      mapTree(
+        list.map((s0) => {
+          const s: any = { ...s0 };
+          for (const key of ['body', 'else', 'handler']) if (Array.isArray(s[key])) s[key] = toSuper(s[key]);
+          if (s.branches) s.branches = s.branches.map((b: any) => ({ ...b, body: toSuper(b.body) }));
+          return s;
+        }),
+        (e) => {
+          if (e.k !== 'pcall' || e.callee.k !== 'var' || e.args[0]?.k !== 'self') return undefined;
+          const m = new RegExp(`^${c.name}_(\\w+?)_(\\w+)$`, 'i').exec(e.callee.name);
+          if (!m || !baseNames.includes(m[1].toLowerCase())) return undefined;
+          return { k: 'pcall', callee: { k: 'member', obj: { k: 'super' }, name: m[2] }, args: e.args.slice(1) };
+        },
+      );
+    c.methods = c.methods.map((m) => ({ ...m, body: toSuper(m.body) }));
+    c.ctor = toSuper(c.ctor);
+    // properties of the base classes are inherited
+    const inheritedFields = new Set(bases.flatMap((b) => b.fields.map((f) => f.name.toLowerCase())));
+    c.fields = c.fields.filter((f) => !inheritedFields.has(f.name.toLowerCase()));
+  }
+  return classes;
 }
 
 function originalCase(body: Stmt[], lower: string): string {

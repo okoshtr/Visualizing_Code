@@ -1,6 +1,7 @@
 import { type Analysis, MAIN, type Ty, elemOf, isList, isNumeric } from '../analysis';
 import type { ClassDef, Ex, Expr, ImportInfo, Lang, Program, Stmt } from '../ir';
 import { walkStmts } from '../ir';
+import { Hierarchy, superInitOf } from '../classes';
 import { HELPERS, externalModule, findLibFn, implFor, isExternalLib } from '../library';
 import { freshName, ident } from '../names';
 
@@ -148,18 +149,46 @@ export abstract class BaseGen {
     return isNumeric(this.typeOf(e));
   }
 
-  /** User-defined classes. */
-  protected get classes(): ClassDef[] {
-    return this.program.classes ?? [];
+  private hierarchy?: Hierarchy;
+  protected get h(): Hierarchy {
+    return (this.hierarchy ??= Hierarchy.of(this.program));
   }
 
-  /** Properties of a class: declared ones plus those that are only set in its methods. */
+  /** User-defined classes, base classes before their subclasses. */
+  protected get classes(): ClassDef[] {
+    const out: ClassDef[] = [];
+    const add = (c: ClassDef) => {
+      if (out.includes(c)) return;
+      const base = this.h.base(c.name);
+      if (base && !out.includes(base) && !this.h.chain(base.name).includes(c)) add(base);
+      out.push(c);
+    };
+    for (const c of this.program.classes ?? []) add(c);
+    return out;
+  }
+
+  /** Properties a class declares: its own ones (those of a base class are inherited). */
   protected classFields(c: ClassDef): string[] {
-    const names = c.fields.map((f) => f.name);
-    walkStmts([...c.ctor, ...c.methods.flatMap((m) => m.body)], (s) => {
-      if (s.k === 'fset' && s.obj?.k === 'self' && !names.includes(s.name)) names.push(s.name);
-    });
-    return names;
+    return this.h.declaredFields(c);
+  }
+
+  /**
+   * Constructor of a class as it is written: its parameters, the values for the base class
+   * (null: none or written later in the body) and the remaining statements.
+   * A subclass without own constructor takes the values of the base class and passes them on.
+   */
+  protected ctorPlan(c: ClassDef): { params: string[]; superArgs: Ex[] | null; body: Stmt[]; own: boolean } {
+    const own = this.h.hasOwnCtor(c);
+    const base = this.h.base(c.name);
+    if (!base) return { params: c.ctorParams, superArgs: null, body: c.ctor, own };
+    if (!own) {
+      const params = this.h.ctorParams(c.name);
+      return { params, superArgs: params.map((p): Expr => ({ k: 'var', name: p })), body: [], own };
+    }
+    const first = superInitOf(c.ctor);
+    if (first) return { params: c.ctorParams, superArgs: first.args, body: c.ctor.filter((s) => s !== first), own };
+    const later = c.ctor.some((s) => s.k === 'superinit');
+    return { params: c.ctorParams, superArgs: later ? null : [], body: c.ctor, own };
   }
 
   protected isClassType(e: Ex): string | null {

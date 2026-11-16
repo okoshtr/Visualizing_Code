@@ -75,6 +75,8 @@ export type Expr = Node &
     | { k: 'errmsg' }
     /** The object whose method is running ("dieses Objekt": self / this). */
     | { k: 'self' }
+    /** The base class of the running method's class (super / base), only as object of a method call. */
+    | { k: 'super' }
     /** New object of a user-defined class. */
     | { k: 'new'; cls: string; args: Ex[] }
     /** Dictionary (map) literal. */
@@ -126,6 +128,8 @@ export type Stmt = Node &
     | { k: 'dset'; dict: Ex; key: Ex; value: Ex }
     /** set a property (field) of an object */
     | { k: 'fset'; obj: Ex; name: string; value: Ex }
+    /** In a constructor: let the base class set up the object first (super(...) / base(...)). */
+    | { k: 'superinit'; args: Ex[] }
     | { k: 'comment'; text: string }
     | { k: 'raw'; code: string; lang: Lang }
     // ---- parse-only ----
@@ -182,6 +186,8 @@ export interface ClassDef {
   ctor: Stmt[];
   /** Methods (the object is available as "dieses Objekt"). */
   methods: FunctionDef[];
+  /** Base class (inheritance): the class takes over its properties and methods. */
+  base?: string;
   comment?: string;
 }
 
@@ -276,6 +282,8 @@ export function stmtExprs(s: Stmt): Ex[] {
       return [s.dict, s.key, s.value];
     case 'fset':
       return [s.obj, s.value];
+    case 'superinit':
+      return s.args;
     default:
       return [];
   }

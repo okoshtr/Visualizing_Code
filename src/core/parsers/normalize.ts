@@ -4,7 +4,7 @@
 
 import { analyze, isDict, isList } from '../analysis';
 import { foldPlus } from '../generators/base';
-import type { Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
+import type { ClassDef, Diagnostic, Ex, Expr, FunctionDef, Lang, Program, Stmt } from '../ir';
 import { CTOR, assignedNames, exprEquals, methodPlace } from '../ir';
 import { LIBRARIES, implFor } from '../library';
 import type { ParseResult } from './common';
@@ -472,8 +472,17 @@ class Normalizer {
   vbaMethod(name: string): string | null {
     const i = name.indexOf('_');
     if (i < 0) return null;
-    const cls = this.program.classes?.find((c) => c.name.toLowerCase() === name.slice(0, i).toLowerCase());
-    return cls?.methods.find((m) => m.name.toLowerCase() === name.slice(i + 1).toLowerCase())?.name ?? null;
+    // the method may come from a base class
+    const classes = this.program.classes ?? [];
+    let cls = classes.find((c) => c.name.toLowerCase() === name.slice(0, i).toLowerCase());
+    const seen = new Set<ClassDef>();
+    while (cls && !seen.has(cls)) {
+      seen.add(cls);
+      const m = cls.methods.find((x) => x.name.toLowerCase() === name.slice(i + 1).toLowerCase());
+      if (m) return m.name;
+      cls = cls.base ? classes.find((c) => c.name === cls!.base) : undefined;
+    }
+    return null;
   }
 
   /** Arguments of a call of a user function: keyword arguments and default values are filled in. */
@@ -517,6 +526,8 @@ class Normalizer {
         return { ...s, value: this.expr(s.value) };
       case 'set':
         return { ...s, value: this.expr(s.value) };
+      case 'superinit':
+        return { ...s, args: s.args.map((a) => this.expr(a)) };
       case 'change':
         return { ...s, by: this.expr(s.by) };
       case 'if':
@@ -802,7 +813,9 @@ export function normalize(program: Program, lang: Lang, diagnostics: Diagnostic[
           classes: program.classes.map((c) => ({
             ...c,
             fields: c.fields.map((x) => ({ ...x, value: nz.expr(x.value) })),
-            ctor: nz.stmts(c.ctor),
+            // a constructor that only passes its values on to the base class is the inherited one
+            ...(isPassOn(c) ? { ctorParams: [] } : {}),
+            ctor: isPassOn(c) ? [] : nz.stmts(c.ctor),
             methods: c.methods.map(({ defaults: _d, ...m }) => ({ ...m, body: nz.stmts(m.body) })),
           })),
         }
@@ -901,6 +914,13 @@ function fixDictStatements(p: Program): Program {
         }
       : {}),
   };
+}
+
+/** Hund(name) { super(name); } */
+function isPassOn(c: ClassDef): boolean {
+  if (!c.base || c.ctor.length !== 1) return false;
+  const s = c.ctor[0];
+  return s.k === 'superinit' && s.args.length === c.ctorParams.length && s.args.every((a, i) => a?.k === 'var' && a.name === c.ctorParams[i]);
 }
 
 function mergeStr(parts: Ex[]): Ex[] {

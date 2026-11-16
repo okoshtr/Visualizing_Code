@@ -9,7 +9,14 @@ const dir = join(__dirname, 'samples');
 
 const HUNDE = 'Bello ist 2 Jahre alt\nLuna ist 0 Jahre alt\nBello ist älter\n';
 
+const TIERE = 'Etwas sagt ...\nBello sagt Wuff\nTweety sagt Piep\nTweety fliegt davon\nBeine zusammen: 10\n';
+
 const EXPECTED: Record<string, string> = {
+  'vererbung.py': TIERE,
+  'Vererbung.java': TIERE,
+  'Vererbung.cs': TIERE,
+  'vererbung.cpp': TIERE,
+  'vererbung.js': TIERE,
   'sample.py': 'Zahlen: [2, 4, 8, 10]\nSumme ist = 24\nHallo Ada, willkommen!\n49\nHALLO WELT 10\nHallo tleW ollaH\ngefunden\nEnde bei -2\n4 3 3.5 1024\nTrue\n',
   'Main.java': '1: ADA\n2: LINUS\n0 1 2 \n3\n3.5\n42\nerster: Ada\nk=-2 d=7.0\n',
   'main.cpp': 'Summe: 43\n16 15 8 4 \nHallo Welt!\n5! = 120\n',

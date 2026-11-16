@@ -4,7 +4,7 @@ import { MAIN, type PlaceInfo, type Ty, dictParts, elemOf, isDict, isList } from
 import type { ClassDef, Ex, Expr, FunctionDef, Stmt } from '../ir';
 import { CTOR, methodPlace } from '../ir';
 import { stmtExprs, walkExpr } from '../ir';
-import { ATOM, BaseGen, type Code, foldPlus } from './base';
+import { ATOM, BaseGen, type Code, foldPlus, langLabel } from './base';
 
 export const C = { cond: 1, or: 2, and: 3, eq: 5, rel: 6, add: 7, mul: 8, unary: 9, pow: 10 };
 
@@ -262,6 +262,15 @@ export abstract class CLikeGen extends BaseGen {
       case 'fset':
         this.emit(`${this.memberPrefix(s.obj)}${s.name} = ${this.sub(s.value)};`);
         break;
+      case 'superinit': {
+        const line = this.superInitLine(s.args);
+        if (line) this.emit(line);
+        else {
+          this.warn(`In ${langLabel(this.lang)} steht der Aufruf der Basisklasse am Anfang des Konstruktors.`);
+          this.comment(`Basisklasse erzeugen mit: ${this.args(s.args)}`);
+        }
+        break;
+      }
       case 'return':
         if (this.place === MAIN) this.emit(this.mainReturn());
         else this.emit(s.value ? `return ${this.sub(s.value)};` : 'return;');
@@ -361,7 +370,15 @@ export abstract class CLikeGen extends BaseGen {
   // ---- classes ----------------------------------------------------------------------------
 
   protected classHead(c: ClassDef): string {
-    return `class ${c.name}`;
+    return c.base ? `class ${c.name} extends ${c.base}` : `class ${c.name}`;
+  }
+  /** The base class as object of a method call ("super." / "base." / "Tier::"). */
+  protected superPrefix(): string {
+    return 'super.';
+  }
+  /** Calls the base class's constructor as first statement (Java, JavaScript); null if it is in the head. */
+  protected superInitLine(args: Ex[]): string | null {
+    return `super(${this.args(args)});`;
   }
   protected classEnd(): string {
     return '}';
@@ -370,7 +387,7 @@ export abstract class CLikeGen extends BaseGen {
   protected fieldDecl(t: Ty, name: string, value: string | null): string | null {
     return `${this.typeName(t, 'decl')} ${name}${value !== null ? ` = ${value}` : this.defaultInit(t)};`;
   }
-  protected ctorHead(c: ClassDef, params: string): string {
+  protected ctorHead(c: ClassDef, params: string, _superArgs?: Ex[] | null): string {
     return `${c.name}(${params})`;
   }
   protected methodHead(_c: ClassDef, m: FunctionDef, ret: string, params: string): string {
@@ -378,6 +395,7 @@ export abstract class CLikeGen extends BaseGen {
   }
   /** "obj." / "this->" before a property or method name. */
   protected memberPrefix(obj: Ex): string {
+    if (obj?.k === 'super') return this.superPrefix();
     return `${this.sub(obj, ATOM)}.`;
   }
 
@@ -406,13 +424,20 @@ export abstract class CLikeGen extends BaseGen {
         const gap = () => {
           if (this.lines.length > start) this.blank();
         };
-        if (c.ctorParams.length || c.ctor.length || fieldInits.length) {
+        const plan = this.ctorPlan(c);
+        // values of an inherited constructor have the types of the base class's constructor
+        const paramPlace = plan.own || !c.base ? ctorPlace : methodPlace(this.h.ctorOwner(c.name)?.name ?? c.name, CTOR);
+        // Java, C# and C++ do not inherit constructors with values: pass them on
+        const passOn = !!c.base && !plan.own && plan.params.length > 0 && this.lang !== 'javascript';
+        if (c.ctorParams.length || c.ctor.length || fieldInits.length || passOn) {
           gap();
-          this.open(this.ctorHead(c, this.paramList(ctorPlace, c.ctorParams)), () => {
+          this.open(this.ctorHead(c, this.paramList(paramPlace, plan.params), plan.superArgs), () => {
+            const superLine = plan.superArgs && (plan.superArgs.length || this.lang === 'javascript') ? this.superInitLine(plan.superArgs) : null;
+            if (superLine) this.emit(superLine);
             for (const l of fieldInits) this.emit(l);
-            this.functionBody(this.a.place(ctorPlace));
+            this.functionBody({ ...this.a.place(ctorPlace), body: plan.body });
           });
-          if (c.ctorParams.length && this.lang === 'cpp') this.emit(`${c.name}() {}`);
+          if (plan.params.length && this.lang === 'cpp') this.emit(`${c.name}() {}`);
         }
         for (const m of c.methods) {
           const place = methodPlace(c.name, m.name);
@@ -553,10 +578,20 @@ export abstract class CLikeGen extends BaseGen {
         return [`${this.memberPrefix(e.obj)}${e.name}(${this.args(e.args)})`, ATOM];
       case 'member':
         return [`${this.memberPrefix(e.obj)}${e.name}`, ATOM];
-      case 'self':
-        return [this.lang === 'cpp' ? '(*this)' : 'this', this.lang === 'cpp' ? ATOM : ATOM];
+      case 'self': {
+        if (this.lang !== 'cpp') return ['this', ATOM];
+        // C++: "dieses Objekt" as a value is a shared_ptr that does not own the object
+        const cls = this.place.includes('.') ? this.place.slice(0, this.place.indexOf('.')) : '';
+        return [`shared_ptr<${cls}>(this, [](${cls}*) {})`, ATOM];
+      }
+      case 'super':
+        return [this.superPrefix().replace(/(\.|::)$/, ''), ATOM];
       case 'new':
-        return [`${this.lang === 'cpp' ? '' : 'new '}${e.cls}(${this.args(e.args)})`, ATOM];
+        if (this.lang === 'cpp') {
+          this.imports.add('<memory>');
+          return [`make_shared<${e.cls}>(${this.args(e.args)})`, ATOM];
+        }
+        return [`new ${e.cls}(${this.args(e.args)})`, ATOM];
       case 'cond':
         return [`${this.sub(e.cond, C.cond + 1)} ? ${this.sub(e.a, C.cond + 1)} : ${this.sub(e.b, C.cond)}`, C.cond];
       case 'errmsg': {

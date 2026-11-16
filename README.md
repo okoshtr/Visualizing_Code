@@ -21,13 +21,16 @@ Beide nutzen denselben sprachneutralen Kern.
 | **Code → Blöcke** | Code im Code-Feld ändern oder eine Datei öffnen, dann „In Blöcke umwandeln“. Leerzeilen und Kommentare am Zeilenende bleiben erhalten. |
 | **Block ↔ Code verknüpft** | Ein Klick auf einen Block markiert seine Code-Zeilen; ein Klick in eine Code-Zeile markiert den Block. Fährt man über einen Block, zeigt ein Tooltip den Code dazu. |
 | **Start / Konsole** | Das Programm läuft direkt im Editor, mit Ausgabe und Eingabe („frage … und lies“). „Zeitlupe“ zeigt den gerade ausgeführten Block. Code und Konsole lassen sich einklappen. |
+| **Schritt für Schritt** | „Schritt“ (F10) führt einen Block nach dem anderen aus und markiert ihn; der Reiter „Variablen“ zeigt dabei die aktuellen Werte (Hauptprogramm, laufende Funktion oder Methode, „dieses Objekt“). „Weiter“ läuft ohne Halt bis zum Ende. |
 | **Zeichnen** | Bibliothek „Zeichnen“ (vorwärts, drehen, Stiftfarbe …). Die Zeichnung erscheint im Reiter „Zeichnung“; Python nutzt `turtle`, die anderen Sprachen speichern `zeichnung.svg`. |
 | **Bibliotheken** | Ein Block mit zwei Dropdowns: Bibliothek (Mathe, Text, Liste, Wörterbuch, Datei, Zufall, Zeit, Zeichnen) und Funktion. Die Parameter sind weiße Felder, in die man Werte oder Blöcke zieht. Jede Funktion hat für jede Sprache die passende Umsetzung (z. B. `s.upper()`, `s.toUpperCase()`, `s.ToUpper()`, `UCase(s)`). Nötige `import`/`#include`-Zeilen ergänzt der Editor selbst. |
 | **Pakete importieren** | „importiere Paket `pulp` als `pulp`“ bzw. „aus Paket `pulp` importiere `LpProblem, lpSum`“. Das Paket erscheint danach im ersten Dropdown der Bibliotheks-Blöcke; für bekannte Pakete (pulp, numpy, pandas, matplotlib, requests, statistics, json, os, lodash, fs, path) stehen die Funktionen schon im zweiten Dropdown, jede andere lässt sich eintippen. |
 | **Benannte Werte** | „benannt `lowBound` = 0“ für Aufrufe wie `LpVariable("x", lowBound=0)`. Python schreibt `name=wert`, C# `name: wert`, VBA `name:=wert`; die anderen Sprachen übergeben den Wert an seiner Stelle (mit Hinweis). Werte aus Paketen wie `pulp.LpMaximize` haben den Block „Wert … aus …“. |
 | **Klassen** | Klasse mit Eigenschaften, „beim Erzeugen“ (Konstruktor) und Methoden; „dieses Objekt“, „neues Objekt“, „setze Eigenschaft“. In VBA wird daraus ein `Type` mit `NeuKlasse` und `Klasse_methode`. |
+| **Vererbung** | „Klasse Hund erbt von Tier“: Die Unterklasse übernimmt Eigenschaften und Methoden und kann einzelne neu festlegen. „Basisklasse erzeugen mit …“ ruft den Konstruktor der Basisklasse auf (`super(...)` / `base(...)`), „Basisklasse“ als Objekt eines Methodenaufrufs ruft deren Version einer Methode auf. C# bekommt `virtual`/`override`, C++ `virtual`; in VBA, das keine Vererbung kennt, werden die geerbten Teile in jede Unterklasse kopiert (und beim Einlesen wiedererkannt). |
 | **Aufgaben** | 10 geführte Aufgaben in drei Stufen mit Tipp und automatischer Prüfung (Ausgabe, verlangte Bausteine wie Schleife oder Funktion, Schutz vor Endlosschleifen). Gelöste Aufgaben bekommen ein ✓. |
 | **Typen** | Für Java, C# und C++ werden Typen (`int`, `double`, `String`, `ArrayList<Integer>`, `Map<String, Integer>`, eigene Klassen …) automatisch abgeleitet. |
+| **Teilen** | In der Web-App kopiert „Teilen“ einen Link, in dem das ganze Programm (komprimiert) steckt. Wer ihn öffnet, sieht genau diese Blöcke. |
 | **Zahlen wie in der Sprache** | Ausgabe, Division (`/`, `//`, `%`), Runden und die Reihenfolge von Wörterbüchern verhalten sich in der eingebauten Konsole wie in der gewählten Sprache. |
 
 ### Die Blöcke
@@ -42,7 +45,7 @@ Beide nutzen denselben sprachneutralen Kern.
 - **Bibliotheken**: Mathe, Text, Liste, Wörterbuch, Datei, Zufall, Zeit, Zeichnen und importierte Pakete
 - **Wörterbücher**: Wörterbuch aus Paaren, Wert zu Schlüssel, setze Schlüssel, enthält/Schlüssel/Werte/Anzahl/entferne
 - **Funktionen**: definiere, definiere mit Rückgabe, gib zurück, Aufrufe (Standardwerte und benannte Argumente aus dem Code werden beim Einlesen aufgelöst)
-- **Klassen**: Klasse, Eigenschaft, beim Erzeugen, Methode, dieses Objekt, neues Objekt, Eigenschaft lesen/setzen, Methode aufrufen
+- **Klassen**: Klasse (mit „erbt von“), Eigenschaft, beim Erzeugen, Methode, dieses Objekt, neues Objekt, Eigenschaft lesen/setzen, Methode aufrufen, Basisklasse erzeugen, Basisklasse
 - **Mehr**: Notiz (Kommentar), Methodenaufruf
 
 `switch`/`Select Case` wird beim Einlesen zu „falls / sonst falls“, Tupel-Zuweisungen
@@ -52,7 +55,12 @@ Beide nutzen denselben sprachneutralen Kern.
 
 Konstrukte ohne eigenen Block werden beim Einlesen als **Code-Block** übernommen. Er
 enthält den Originaltext, damit nichts verloren geht. Das betrifft derzeit vor allem
-Vererbung, Lambdas, Generatoren, Zeiger/Referenzen in C++ und Objekt-Literale in JavaScript.
+Schnittstellen und Mehrfachvererbung, Lambdas, Generatoren, rohe Zeiger in C++ und
+Objekt-Literale in JavaScript.
+
+Objekte eigener Klassen verhalten sich in allen Sprachen gleich: Zwei Variablen können
+dasselbe Objekt meinen. In C++ werden sie deshalb als `shared_ptr` (mit `make_shared`)
+erzeugt; so behält ein Hund auch in einer Liste von Tieren seine eigenen Methoden.
 
 ## Schnellstart
 
@@ -88,9 +96,10 @@ Danach <http://localhost:8080/> öffnen.
 - **Echte Compiler**: Der erzeugte Code wird mit `python3`, `node`, `javac`/`java`, `g++` und
   `dotnet` übersetzt und ausgeführt; die Ausgabe muss der eingebauten Konsole entsprechen.
   Fehlt ein Compiler, wird der Test übersprungen.
-- **Handgeschriebener Code**: `tests/samples` enthält typischen Code je Sprache (auch Klassen
-  und Pakete), der ohne Code-Blöcke eingelesen werden muss – im Browser auch durch den echten
-  Block-Editor.
+- **Handgeschriebener Code**: `tests/samples` enthält typischen Code je Sprache (auch Klassen,
+  Vererbung und Pakete), der ohne Code-Blöcke eingelesen werden muss – im Browser auch durch
+  den echten Block-Editor. Die Klassen- und Vererbungsbeispiele laufen nach dem Übersetzen in
+  jeder Sprache mit dem echten Compiler und liefern dieselbe Ausgabe.
 - **Aufgaben**: Jede Musterlösung besteht ihre Prüfung und läuft in allen Compilern.
 
 ### Automatisch auf GitHub

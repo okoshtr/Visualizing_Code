@@ -2,6 +2,7 @@
 
 import { type Analysis, MAIN, type Ty, analyze, dictParts, elemOf, isDict, isList } from './analysis';
 import type { Ex, Expr, Lang, Program, Stmt } from './ir';
+import { Hierarchy, superInitOf } from './classes';
 import { CTOR, methodPlace } from './ir';
 import { dictKeys, findLibFn, isExternalLib } from './library';
 
@@ -186,6 +187,7 @@ class Runner {
     public lang: Lang,
   ) {
     this.a = analyze(program);
+    this.h = Hierarchy.of(program);
     this.fns = new Map(program.functions.map((f) => [f.name, f]));
   }
 
@@ -251,6 +253,24 @@ class Runner {
         break;
     }
     this.host.draw?.(d);
+  }
+
+  h: Hierarchy;
+
+  /** The object whose method is running. */
+  selfObj(): Obj {
+    const f = [...this.stack].reverse().find((x) => x.self);
+    if (!f?.self) this.err('"dieses Objekt" gibt es nur in Methoden einer Klasse.');
+    return f.self;
+  }
+
+  /** Base class of the class whose method is running. */
+  baseOfFrame(): string {
+    const place = this.frame.place;
+    const cls = place.includes('.') ? place.slice(0, place.indexOf('.')) : '';
+    const base = cls ? this.h.base(cls) : undefined;
+    if (!base) this.err(cls ? `Die Klasse "${cls}" hat keine Basisklasse.` : '"Basisklasse" gibt es nur in Methoden einer Klasse.');
+    return base.name;
   }
 
   /** Messages of the errors caught by the surrounding "versuche" blocks. */
@@ -464,8 +484,16 @@ class Runner {
         await this.lib(s.lib, s.fn, s.args);
         return;
       case 'methodstmt':
-        await this.callMethod(await this.expr(s.obj), s.name, s.args);
+        if (s.obj?.k === 'super') await this.callMethod(this.selfObj(), s.name, s.args, this.baseOfFrame());
+        else await this.callMethod(await this.expr(s.obj), s.name, s.args);
         return;
+      case 'superinit': {
+        const base = this.baseOfFrame();
+        const args: any[] = [];
+        for (const a of s.args) args.push(await this.expr(a));
+        await this.construct(this.selfObj(), base, args);
+        return;
+      }
       case 'fset': {
         const obj = await this.expr(s.obj);
         if (!(obj instanceof Obj)) this.err(`"${s.name}" kann nur bei Objekten eigener Klassen gesetzt werden.`);
@@ -485,38 +513,62 @@ class Runner {
     }
   }
 
-  /** Creates an object: start values of the properties, then the constructor. */
+  /** Creates an object: base classes first, then start values of the properties and the constructor. */
   async create(cls: string, argExprs: Ex[]): Promise<Obj> {
-    const c = this.program.classes?.find((x) => x.name === cls);
-    if (!c) this.err(`Die Klasse "${cls}" gibt es nicht.`);
+    if (!this.h.get(cls)) this.err(`Die Klasse "${cls}" gibt es nicht.`);
     const obj = new Obj(cls);
     const args: any[] = [];
     for (const a of argExprs) args.push(await this.expr(a));
+    await this.construct(obj, cls, args);
+    return obj;
+  }
+
+  /** Sets up the part of `obj` that belongs to class `cls`. */
+  async construct(obj: Obj, cls: string, args: any[]) {
+    const c = this.h.get(cls)!;
+    const base = this.h.base(cls);
+    const own = this.h.hasOwnCtor(c);
     const place = methodPlace(cls, CTOR);
     const vars = new Map<string, any>();
-    c.ctorParams.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, place)));
+    if (own) c.ctorParams.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, place)));
     this.stack.push({ place, vars, self: obj });
     const saved = this.current;
     try {
+      let body = c.ctor;
+      if (base) {
+        const first = superInitOf(c.ctor);
+        if (!own) {
+          // no constructor of its own: the base class gets the values
+          await this.construct(obj, base.name, args);
+        } else if (first) {
+          const baseArgs: any[] = [];
+          for (const a of first.args) baseArgs.push(await this.expr(a));
+          await this.construct(obj, base.name, baseArgs);
+          body = c.ctor.filter((s) => s !== first);
+        } else if (!c.ctor.some((s) => s.k === 'superinit')) {
+          await this.construct(obj, base.name, []);
+        }
+      }
       for (const f of c.fields) obj.fields.set(f.name, await this.expr(f.value));
-      await this.block(c.ctor);
+      await this.block(body);
     } catch (e) {
       if (!(e instanceof Return)) throw e;
     } finally {
       this.stack.pop();
       this.current = saved;
     }
-    return obj;
   }
 
-  async callMethod(obj: any, name: string, argExprs: Ex[]): Promise<any> {
+  /** Calls a method; `from` = class where the search starts (the base class for "Basisklasse"). */
+  async callMethod(obj: any, name: string, argExprs: Ex[], from?: string): Promise<any> {
     if (!(obj instanceof Obj)) this.err(`Die Methode "${name}" kann die eingebaute Ausführung nicht ausführen.`);
-    const m = this.program.classes?.find((x) => x.name === obj.cls)?.methods.find((x) => x.name === name);
-    if (!m) this.err(`Die Klasse "${obj.cls}" hat keine Methode "${name}".`);
+    const owner = this.h.methodOwner(from ?? obj.cls, name);
+    const m = owner?.methods.find((x) => x.name === name);
+    if (!owner || !m) this.err(`Die Klasse "${obj.cls}" hat keine Methode "${name}".`);
     if (this.stack.length > 1500) this.err('Zu viele verschachtelte Aufrufe (endlose Rekursion?).');
     const args: any[] = [];
     for (const a of argExprs) args.push(await this.expr(a));
-    const place = methodPlace(obj.cls, name);
+    const place = methodPlace(owner.name, name);
     const vars = new Map<string, any>();
     m.params.forEach((p, i) => vars.set(p, args[i] ?? this.defaultFor(p, place)));
     this.stack.push({ place, vars, self: obj });
@@ -714,7 +766,7 @@ class Runner {
       }
       case 'method': {
         const id = e.id;
-        const r = await this.callMethod(await this.expr(e.obj), e.name, e.args);
+        const r = e.obj?.k === 'super' ? await this.callMethod(this.selfObj(), e.name, e.args, this.baseOfFrame()) : await this.callMethod(await this.expr(e.obj), e.name, e.args);
         this.current = id;
         return r;
       }
@@ -724,6 +776,9 @@ class Runner {
         if (!obj.fields.has(e.name)) this.err(`Das Objekt hat keine Eigenschaft "${e.name}".`);
         return obj.fields.get(e.name);
       }
+      case 'super':
+        this.err('"Basisklasse" gibt es nur beim Aufruf einer Methode.');
+        break;
       case 'self': {
         const f = [...this.stack].reverse().find((x) => x.self);
         if (!f?.self) this.err('"dieses Objekt" gibt es nur in Methoden einer Klasse.');

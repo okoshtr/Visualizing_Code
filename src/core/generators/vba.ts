@@ -46,6 +46,14 @@ export class VbaGen extends BaseGen {
     return this.classes.some((c) => c.name.toLowerCase() === base.toLowerCase()) ? `${base}Obj` : base;
   }
 
+  /** "Basisklasse → laut" inside class code: the copy of the base class's version for this object. */
+  private superMethodName(name: string): string {
+    const base = this.h.base(this.defCls);
+    const owner = base ? this.h.methodOwner(base.name, name) : undefined;
+    if (!owner) return `${this.selfCls}_${name}`;
+    return this.requestCopy(this.selfCls, owner.name, name);
+  }
+
   typeName(t: Ty): string {
     if (t.startsWith('obj<')) return t.slice(4, -1);
     if (isList(t)) return 'Variant';
@@ -67,6 +75,10 @@ export class VbaGen extends BaseGen {
       this.capture(() =>
         this.withId(c.id, () => {
           if (c.comment) this.comment(c.comment);
+          if (c.base) {
+            this.emitSubclass(c);
+            return;
+          }
           this.procedure({ name: `Neu${c.name}`, params: c.ctorParams, body: c.ctor, returns: true }, { cls: c, ctor: true });
           for (const m of c.methods) {
             this.blank();
@@ -75,12 +87,18 @@ export class VbaGen extends BaseGen {
         }),
       ),
     );
+    // copies of base class code for subclasses (VBA has no inheritance)
+    const copies: string[][] = [];
+    for (let i = 0; i < this.copyQueue.length; i++) copies.push(this.capture(() => this.copyQueue[i]()));
+    if (this.classes.some((c) => c.base)) this.warn('VBA kennt keine Vererbung: Eigenschaften und Methoden der Basisklasse werden in jede Unterklasse kopiert.');
     const fns = this.program.functions.map((f) => this.capture(() => this.withId(f.id, () => this.procedure(f))));
     const main = this.capture(() => this.withId(this.program.mainId, () => this.procedure(null)));
     const out = ['Option Explicit', ''];
     for (const c of this.classes) {
       out.push(`Type ${c.name}`);
-      for (const name of this.classFields(c)) out.push(`    ${name} As ${this.typeName(this.a.fieldType(c.name, name))}`);
+      // a subclass's Type also holds the properties of its base classes
+      const fields = [...this.h.chain(c.name)].reverse().flatMap((d) => this.classFields(d));
+      for (const name of fields) out.push(`    ${name} As ${this.typeName(this.a.fieldType(c.name, name))}`);
       out.push('End Type', '');
       if (JSON.stringify(this.program).includes(`list<obj<${c.name}>>`)) this.warn('VBA: Listen von Objekten werden nicht unterstützt.');
     }
@@ -89,6 +107,7 @@ export class VbaGen extends BaseGen {
     if (globals.length) out.push('');
     for (const h of this.helperCode()) out.push(h, '');
     for (const c of classProcs) out.push(...c, '');
+    for (const c of copies) out.push(...c, '');
     for (const f of fns) out.push(...f, '');
     out.push(...main);
     return this.result(out.join('\n'));
@@ -97,42 +116,106 @@ export class VbaGen extends BaseGen {
   /** VBA name of the running procedure (for "name = value" returns) and its analysis place. */
   private fnVba = '';
   private fnPlace = '';
+  /** Type of "self" and the class whose code is being written (differ in copies for subclasses). */
+  private selfCls = '';
+  private defCls = '';
+  private copyQueue: (() => void)[] = [];
+  private copied = new Set<string>();
 
-  private procedure(f: FunctionDef | null, cls?: { cls: ClassDef; ctor: boolean }) {
+  /** Asks for a copy of base class code for objects of a subclass, returns its name. */
+  private requestCopy(self: string, def: string, what: string): string {
+    const name = `${self}_${def}_${what}`;
+    if (this.copied.has(name)) return name;
+    this.copied.add(name);
+    const d = this.h.get(def)!;
+    this.copyQueue.push(() => {
+      this.blank();
+      if (what === 'Init') {
+        const plan = this.ctorPlan(d);
+        this.procedure({ name: what, params: plan.params, body: plan.body, returns: false }, { cls: d, ctor: true, self, name, init: true, baseInit: this.baseInitLine(self, d, plan.superArgs), paramPlace: this.ctorParamPlace(d, plan.own) });
+      } else {
+        const m = d.methods.find((x) => x.name === what)!;
+        this.procedure(m, { cls: d, ctor: false, self, name });
+      }
+    });
+    return name;
+  }
+
+  private ctorParamPlace(c: ClassDef, own: boolean): string {
+    return own || !c.base ? methodPlace(c.name, CTOR) : methodPlace(this.h.ctorOwner(c.name)?.name ?? c.name, CTOR);
+  }
+
+  /** "Hund_Tier_Init self, name": sets up the base class's part of a subclass object. */
+  private baseInitLine(self: string, c: ClassDef, superArgs: Ex[] | null): string | null {
+    const base = this.h.base(c.name);
+    if (!base || !superArgs) return null;
+    return `${this.requestCopy(self, base.name, 'Init')} ${this.args([{ k: 'self' }, ...superArgs])}`;
+  }
+
+  /** A subclass: NeuHund sets up the base part first; inherited methods are copied. */
+  private emitSubclass(c: ClassDef) {
+    const plan = this.ctorPlan(c);
+    this.procedure(
+      { name: `Neu${c.name}`, params: plan.params, body: plan.body, returns: true },
+      { cls: c, ctor: true, baseInit: this.baseInitLine(c.name, c, plan.superArgs), paramPlace: this.ctorParamPlace(c, plan.own) },
+    );
+    const seen = new Set<string>();
+    for (const d of this.h.chain(c.name)) {
+      for (const m of d.methods) {
+        if (seen.has(m.name)) continue;
+        seen.add(m.name);
+        this.blank();
+        this.withId(d === c ? m.id : undefined, () => this.procedure(m, { cls: d, ctor: false, self: c.name, name: `${c.name}_${m.name}` }));
+      }
+    }
+  }
+
+  private procedure(
+    f: FunctionDef | null,
+    cls?: { cls: ClassDef; ctor: boolean; self?: string; name?: string; init?: boolean; baseInit?: string | null; paramPlace?: string },
+  ) {
     this.fn = f;
     const c = cls?.cls;
+    const selfType = cls?.self ?? c?.name ?? '';
+    const init = !!cls?.init;
+    this.selfCls = selfType;
+    this.defCls = c?.name ?? '';
     this.place = c ? methodPlace(c.name, cls!.ctor ? CTOR : f!.name) : f ? f.name : MAIN;
     this.fnPlace = this.place;
-    this.fnVba = c ? (cls!.ctor ? `Neu${c.name}` : `${c.name}_${f!.name}`) : f ? this.id(f.name) : '';
-    const place = this.a.place(this.place);
+    this.fnVba = cls?.name ?? (c ? (cls!.ctor ? `Neu${c.name}` : `${c.name}_${f!.name}`) : f ? this.id(f.name) : '');
+    const place = { ...this.a.place(this.place), ...(f && c && cls!.ctor ? { body: f.body } : {}) };
     this.extraDims = [];
     this.labelCount = 0;
     const bodyLines = this.capture(() =>
       this.indented(() => {
-        if (c && cls!.ctor) for (const fld of c.fields) this.emit(`self.${fld.name} = ${this.sub(fld.value, 0, { k: 'num', v: 0 })}`);
+        if (c && cls!.ctor) {
+          if (cls!.baseInit) this.emit(cls!.baseInit);
+          for (const fld of c.fields) this.emit(`self.${fld.name} = ${this.sub(fld.value, 0, { k: 'num', v: 0 })}`);
+        }
         this.body(place.body);
-        if (c && cls!.ctor) this.emit(`${this.fnVba} = self`);
+        if (c && cls!.ctor && !init) this.emit(`${this.fnVba} = self`);
       }),
     );
-    if (f?.comment) this.comment(f.comment);
+    if (f?.comment && !cls?.self) this.comment(f.comment);
     if (f) {
-      const types = this.a.paramTypes(this.place);
-      const list = f.params.map((p, i) =>
-        isList(types[i]) || types[i] === 'any' || types[i].startsWith('obj<') ? `${this.id(p)} As ${this.typeName(types[i])}` : `ByVal ${this.id(p)} As ${this.typeName(types[i])}`,
-      );
-      if (c && !cls!.ctor) list.unshift(`self As ${c.name}`);
+      const types = this.a.paramTypes(cls?.paramPlace ?? this.place);
+      const list = f.params.map((p, i) => {
+        const t = types[i] ?? 'any';
+        return isList(t) || t === 'any' || t.startsWith('obj<') ? `${this.id(p)} As ${this.typeName(t)}` : `ByVal ${this.id(p)} As ${this.typeName(t)}`;
+      });
+      if (c && (!cls!.ctor || init)) list.unshift(`self As ${selfType}`);
       const params = list.join(', ');
-      const ret = c && cls!.ctor ? c.name : this.typeName(this.a.returnType(this.place));
-      if (f.returns) this.emit(`Function ${this.fnVba}(${params}) As ${ret}`);
+      const ret = c && cls!.ctor ? selfType : this.typeName(this.a.returnType(this.place));
+      if (f.returns && !init) this.emit(`Function ${this.fnVba}(${params}) As ${ret}`);
       else this.emit(`Sub ${this.fnVba}(${params})`);
     } else this.emit(`Sub ${(this.program.meta?.sourceLang === 'vba' && this.program.meta.mainName) || 'Main'}()`);
     this.indented(() => {
-      if (c && cls!.ctor) this.emit(`Dim self As ${c.name}`);
+      if (c && cls!.ctor && !init) this.emit(`Dim self As ${selfType}`);
       for (const line of this.dims(place)) this.emit(line);
       if (!f && this.usesRandom) this.emit('Randomize');
     });
     this.lines.push(...bodyLines);
-    this.emit(f ? (f.returns ? 'End Function' : 'End Sub') : 'End Sub');
+    this.emit(f ? (f.returns && !init ? 'End Function' : 'End Sub') : 'End Sub');
     this.fn = null;
   }
 
@@ -254,7 +337,16 @@ export class VbaGen extends BaseGen {
           this.emit(`${this.externalName(s.lib, s.fn)}${s.args.length ? ' ' + this.args(s.args) : ''}`);
         } else this.emit(this.libCode(s.lib, s.fn, s.args)[0]);
         break;
+      case 'superinit': {
+        const base = this.h.base(this.defCls);
+        if (base) this.emit(`${this.requestCopy(this.selfCls, base.name, 'Init')} ${this.args([{ k: 'self' }, ...s.args])}`);
+        break;
+      }
       case 'methodstmt': {
+        if (s.obj?.k === 'super') {
+          this.emit(`${this.superMethodName(s.name)} ${this.args([{ k: 'self' }, ...s.args])}`);
+          break;
+        }
         const cls = this.isClassType(s.obj);
         if (cls) this.emit(`${cls}_${s.name} ${this.args([s.obj, ...s.args])}`);
         else this.emit(`${this.sub(s.obj, ATOM)}.${s.name}${s.args.length ? ' ' + this.args(s.args) : ''}`);
@@ -408,11 +500,13 @@ export class VbaGen extends BaseGen {
       case 'lib':
         return this.libCode(e.lib, e.fn, e.args, e.get);
       case 'method': {
+        if (e.obj?.k === 'super') return [`${this.superMethodName(e.name)}(${this.args([{ k: 'self' }, ...e.args])})`, ATOM];
         const cls = this.isClassType(e.obj);
         if (cls) return [`${cls}_${e.name}(${this.args([e.obj, ...e.args])})`, ATOM];
         return [`${this.sub(e.obj, ATOM)}.${e.name}(${this.args(e.args)})`, ATOM];
       }
       case 'self':
+      case 'super':
         return ['self', ATOM];
       case 'new':
         return [`Neu${e.cls}(${this.args(e.args)})`, ATOM];
